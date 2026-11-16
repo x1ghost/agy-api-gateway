@@ -15,7 +15,7 @@ test('one gateway manually switches official CLI HOME and restores selection on 
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'agy-accounts-')), state=path.join(root,'state')
   fs.mkdirSync(state,{mode:0o700});for(const n of ['first','second'])fs.mkdirSync(path.join(root,n),{mode:0o700})
   const config=path.join(root,'accounts.json');fs.writeFileSync(config,JSON.stringify({accounts:['first','second'].map(id=>({id,home:path.join(root,id)}))}),{mode:0o600})
-  const cli=path.join(root,'fake-agy');fs.writeFileSync(cli,'#!/usr/bin/env node\nsetTimeout(()=>console.log("gemini-"+require("node:path").basename(process.env.HOME)+"  Synthetic model"),200)\n',{mode:0o700})
+  const cli=path.join(root,'fake-agy');fs.writeFileSync(cli,'#!/usr/bin/env node\nsetTimeout(()=>{const n=require("node:path").basename(process.env.HOME);if(n==="broken")process.exit(1);console.log("gemini-"+n+"  Synthetic model")},200)\n',{mode:0o700})
   const p=await port(),base=`http://127.0.0.1:${p}`,headers={'x-api-key':'t'.repeat(40),'content-type':'application/json'}
   const env={...process.env,AGY_MITM_STATE_DIR:state,AGY_CC_TOKEN:'t'.repeat(40),AGY_PATH:cli,HTTPS_PROXY:'http://127.0.0.1:1',AGY_CC_PORT:String(p),AGY_ACCOUNTS_CONFIG:config}
   let child
@@ -38,6 +38,14 @@ test('one gateway manually switches official CLI HOME and restores selection on 
   await stop();await start()
   assert.equal((await fetch(base+'/gateway/accounts',{headers}).then(r=>r.json())).active,'second')
   assert.equal((await models()).data[0].id,'gemini-second')
+  const add=(id,refresh_token)=>fetch(base+'/gateway/accounts',{method:'POST',headers,body:JSON.stringify({id,refresh_token})})
+  const added=await add('third','synthetic-refresh-only')
+  assert.equal(added.status,201);const summary=await added.json();assert.equal(summary.active,'second');assert.ok(summary.accounts.includes('third'));assert.ok(!JSON.stringify(summary).includes('synthetic-refresh-only'))
+  const credential=path.join(state,'account-homes','third','.gemini','antigravity-cli','antigravity-oauth-token')
+  assert.equal(JSON.parse(fs.readFileSync(credential)).token.refresh_token,'synthetic-refresh-only');assert.equal(fs.statSync(credential).mode&0o777,0o600)
+  assert.equal((await add('third','another-token')).status,409)
+  assert.equal((await add('broken','synthetic-token')).status,422);assert.ok(!fs.existsSync(path.join(state,'account-homes','broken')))
+  assert.equal((await select('third')).status,200);assert.equal((await models()).data[0].id,'gemini-third')
   assert.equal((await select('missing')).status,400)
 })
 

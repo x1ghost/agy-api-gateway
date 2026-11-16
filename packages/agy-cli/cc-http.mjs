@@ -177,6 +177,13 @@ export function createCcServer({ fetchMessages, cancelSession = async () => {}, 
         res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(accountControl.list()))
         return
       }
+      if (accountControl?.add && req.method === "POST" && url.pathname === "/gateway/accounts") {
+        const body = await readBody(req)
+        if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 2 || typeof body.id !== "string" || typeof body.refresh_token !== "string") throw fail(400, "Expected an account id and refresh token")
+        const result = await accountControl.add(body.id, body.refresh_token)
+        res.writeHead(201, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(result))
+        return
+      }
       if (accountControl && req.method === "POST" && url.pathname === "/gateway/accounts/select") {
         const body = await readBody(req)
         if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.id !== "string") throw fail(400, "Expected an account id")

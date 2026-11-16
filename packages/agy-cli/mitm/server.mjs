@@ -31,6 +31,10 @@ fs.writeFileSync(path.join(state,'control.json'),JSON.stringify({port:controlPor
 let modelProvider=createModelProvider({agy,workspace,env:carrier.env})
 const accountControl=accounts&&{
   current:()=>accounts.id,list:()=>accounts.list(),
+  add:(id,refreshToken)=>accounts.add(id,refreshToken,async account=>{
+    try {await createModelProvider({agy,workspace,env:accounts.envFor(carrierEnv,account)})()}
+    catch {throw fail('Official AGY could not validate the new account',422)}
+  }),
   select:(id,inFlight)=>{
     if(inFlight>1||[...broker.jobs.values()].some(job=>!job.done))throw fail('Wait for active gateway requests to finish before switching accounts',409)
     if(id===accounts.id)return accounts.list()
