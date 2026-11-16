@@ -62,3 +62,31 @@ test('HTTP tool roundtrip retains signed upstream call and does not repeat it on
   assert.equal((await(await post(follow,'second')).json()).content[0].text,'done')
   assert.equal(forwards,2)
 })
+
+test('upstream 429 details and retry-after reach the client without a retry', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gateway-error-'))
+  let broker, server, forwards = 0
+  const ctl = async (route, data) => {
+    const response = await fetch(`http://127.0.0.1:${broker.server.address().port}${route}`, {method:'POST',headers:{authorization:'Bearer control'},body:JSON.stringify(data)})
+    assert.equal(response.status, 200)
+    return response.json()
+  }
+  broker = new MitmBroker({token:'control',storeDir:path.join(root,'wire'),drive:async job=>{
+    forwards++
+    await ctl('/claim',{ticket:job.ticket,envelope:{model:'fixture',request:{contents:[{role:'user',parts:[{text:job.marker}]}]}}})
+    const error = {error:{message:'Synthetic quota exhausted',status:'RESOURCE_EXHAUSTED',details:[{reason:'QUOTA'}]}}
+    await ctl('/event',{ticket:job.ticket,kind:'headers',status:429,error_body:Buffer.from(JSON.stringify(error)).toString('base64'),retry_after:'42'})
+  }})
+  await broker.listen()
+  server = createCcServer({fetchMessages:broker.fetch,stateDir:path.join(root,'journal'),token:'test',statelessRequests:true})
+  server.server.listen(0,'127.0.0.1'); await once(server.server,'listening')
+  t.after(async()=>{await server.close();await broker.close();fs.rmSync(root,{recursive:true,force:true})})
+  const response = await fetch(`http://127.0.0.1:${server.server.address().port}/v1/messages`,{method:'POST',headers:{'x-api-key':'test'},body:JSON.stringify({model:'fixture',stream:true,messages:[{role:'user',content:'hello'}]})})
+  assert.equal(response.status,429)
+  assert.equal(response.headers.get('retry-after'),'42')
+  assert.equal(response.headers.get('x-should-retry'),'false')
+  const payload = await response.json()
+  assert.match(payload.error.message,/Synthetic quota exhausted/)
+  assert.equal(payload.error.upstream_error.details[0].reason,'QUOTA')
+  assert.equal(forwards,1)
+})

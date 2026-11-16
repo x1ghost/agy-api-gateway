@@ -162,7 +162,7 @@ class Bridge:
     except Exception:pass
  def responseheaders(self,flow):
   if not flow.metadata.get('ticket') or flow.metadata.get('fixture') or flow.metadata.get('blocked'):return
-  ticket=flow.metadata['ticket'];status=flow.response.status_code;original_encoding=flow.response.headers.get('content-encoding','');original_type=flow.response.headers.get('content-type','')
+  ticket=flow.metadata['ticket'];status=flow.response.status_code;original_encoding=flow.response.headers.get('content-encoding','');original_type=flow.response.headers.get('content-type','');retry_after=flow.response.headers.get('retry-after','')
   # Install the ACK-only filter before fallible persistence/capture operations.
   flow.response.status_code=200
   for h in ['content-length','content-encoding','transfer-encoding']:flow.response.headers.pop(h,None)
@@ -186,9 +186,17 @@ class Bridge:
   q=asyncio.Queue();flow.metadata['queue']=q;flow.metadata['size']=0
   async def worker():
    try:
-    await send('/event',{'ticket':ticket,'kind':'headers','status':status})
     if status!=200:
+     error_body=bytearray()
+     while True:
+      chunk=await q.get()
+      if chunk is None:break
+      if isinstance(chunk,Exception):raise chunk
+      if len(error_body)<16384:error_body.extend(chunk[:16384-len(error_body)])
+     await send('/event',{'ticket':ticket,'kind':'headers','status':status,
+                          'error_body':base64.b64encode(error_body).decode(),'retry_after':retry_after[:128]})
      flow.metadata['control_complete']=True;self.settled(flow);return
+    await send('/event',{'ticket':ticket,'kind':'headers','status':status})
     while True:
      chunk=await q.get()
      if chunk is None:break
@@ -218,7 +226,7 @@ class Bridge:
      if flow.metadata['size']>32*1024*1024:raise ValueError('Response exceeds limit')
      if CAPTURE and flow.metadata.get('capture_index') and flow.metadata['size']<=4*1024*1024:
       with open(CAPTURE/f"model-{flow.metadata['capture_index']:02d}-response.bin",'ab') as capture:capture.write(chunk)
-     if status==200:q.put_nowait(bytes(chunk))
+     q.put_nowait(bytes(chunk))
     except Exception:
      self.refused=True;flow.metadata['stream_failed']=True;q.put_nowait(RuntimeError('Response interception failed'))
     return b''

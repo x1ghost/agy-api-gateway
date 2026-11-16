@@ -1,7 +1,22 @@
 import http from 'node:http'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { WireStore, WireTurn, projectCc, replaceRequest, fail } from './protocol.mjs'
-const errorResponse=e=>Response.json({type:'error',error:{type:e.status===429?'rate_limit_error':'invalid_request_error',message:e.message}},{status:e.status||502,headers:{'x-should-retry':'false'}})
+const errorResponse=e=>Response.json({type:'error',error:{type:e.status===429?'rate_limit_error':'invalid_request_error',message:e.message,...(e.upstreamError?{upstream_error:e.upstreamError}:{})}},{status:e.status||502,headers:{'x-should-retry':'false',...(e.retryAfter?{'retry-after':e.retryAfter}:{})}})
+function upstreamFailure(status, encoded, retryAfter) {
+  const e=fail(`Official AGY upstream HTTP ${status}`,status>=400&&status<=599?status:502)
+  if(typeof encoded==='string' && encoded.length<=24000) {
+    const raw=Buffer.from(encoded,'base64').toString('utf8')
+    try {
+      const value=JSON.parse(raw), detail=value?.error ?? value
+      if(detail && typeof detail==='object' && !Array.isArray(detail)) {
+        e.upstreamError=detail
+        if(typeof detail.message==='string' && detail.message.trim()) e.message+=`: ${detail.message.slice(0,4096)}`
+      }
+    } catch { /* Invalid, truncated, or non-JSON errors retain the status. */ }
+  }
+  if(typeof retryAfter==='string' && retryAfter.length<=128 && /^[\x20-\x7e]+$/.test(retryAfter))e.retryAfter=retryAfter
+  return e
+}
 const cancelled=message=>Object.assign(fail(message,409),{cancelled:true})
 const sse=(name,value)=>new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(value)}\n\n`)
 export class MitmBroker {
@@ -22,10 +37,10 @@ export class MitmBroker {
     if(body.stream)stream=new ReadableStream({start(c){controller=c}})
     const job={ticket,httpRequestId:options.requestId,marker:`AGY_CC_CARRIER_${ticket}`,scope:body.metadata?.user_id,body,claimed:false,done:false,responseStarted:false,status:null,
       emit:(name,data)=>{if(body.stream&&!job.done)controller.enqueue(sse(name,data))},
-      headers:status=>{
+      headers:(status,errorBody,retryAfter)=>{
         if(job.status!==null)throw fail('Duplicate upstream headers',409)
         job.status=status
-        if(status!==200){job.abort(fail(`Official AGY upstream HTTP ${status}`,status>=400&&status<=599?status:502));return}
+        if(status!==200){job.abort(upstreamFailure(status,errorBody,retryAfter));return}
         job.turn=new WireTurn(body,this.store,job.emit)
         if(body.stream){job.responseStarted=true;resolveResponse(new Response(stream,{headers:{'content-type':'text/event-stream'}}));job.turn.start()}
       },
@@ -73,7 +88,7 @@ export class MitmBroker {
       }
       if(req.url!=='/event'||!job.claimed)throw fail('Unclaimed or unknown control event',409)
       try {
-        if(input.kind==='headers')job.headers(input.status)
+        if(input.kind==='headers')job.headers(input.status,input.error_body,input.retry_after)
         else if(input.kind==='chunk')job.chunk(Buffer.from(input.data,'base64'))
         else if(input.kind==='end')job.end()
         else if(input.kind==='error')job.abort(fail('MITM transport failed',502))

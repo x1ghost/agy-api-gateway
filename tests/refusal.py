@@ -46,11 +46,19 @@ with tempfile.TemporaryDirectory() as directory:
     bridge.inflight.add(1)
     flow = types.SimpleNamespace(metadata={'ticket':'synthetic','capture_index':1},
         response=types.SimpleNamespace(status_code=429, headers={}, stream=None))
-    async def fake_send(*args): return {}
+    events = []
+    async def fake_send(*args):
+        events.append(args)
+        return {}
     module.send = fake_send
     async def check():
         bridge.responseheaders(flow)
+        assert flow.response.stream(b'{"error":{"message":"synthetic quota"}}') == b''
+        assert b'AGY_CC_CARRIER_ACK' in flow.response.stream(b'')
         await flow.metadata['worker']
+        event = events[0][1]
+        import base64
+        assert json.loads(base64.b64decode(event['error_body']))['error']['message'] == 'synthetic quota'
         assert bridge.counts['upstream429'] == 1 and not bridge.refused
         assert not module.Bridge().refused
     asyncio.run(check())
