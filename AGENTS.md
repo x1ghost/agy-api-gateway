@@ -25,7 +25,7 @@ This project incorporates code from an independently developed AGY-to-Anthropic 
 
 ## Status
 
-This is **not a complete Anthropic API implementation**. Text, streaming, client tool calls, base64 PNG/JPEG/WebP and adaptive thinking are implemented with limitations. Batches, files, models listing, exact token counting, server-side tools, PDFs, URL images, structured output, stop sequences and several other options are not implemented. Some fields and model behaviors are not equivalent. Unsupported requests must not be assumed to work. See [compatibility](docs/compatibility.md).
+This is **not a complete Anthropic API implementation**. Text, streaming, client tool calls, base64 PNG/JPEG/WebP and adaptive thinking are implemented with limitations. Batches, files, exact token counting, server-side tools, PDFs, URL images, structured output, stop sequences and several other options are not implemented. Some fields and model behaviors are not equivalent. Unsupported requests must not be assumed to work. See [compatibility](docs/compatibility.md).
 
 The portable launcher has passed a real AGY 1.5.9 tool-call and tool-result round trip in one deployment, alongside offline tests. Other environments and the full API surface remain unverified. The supported CLI version and provider behavior may change. Contributions to compatibility and portable deployment are welcome.
 

@@ -2,6 +2,7 @@ import http from "node:http"
 import fs from "node:fs"
 import path from "node:path"
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto"
+import { modelPage, upstreamModel } from "./mitm/models.mjs"
 
 const hash = value => createHash("sha256").update(value).digest("hex")
 const stable = value => JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
@@ -18,7 +19,7 @@ const authenticated = (left, right) => {
 // journalling, so reconnects can replay exactly the same bytes and tool IDs.
 // A process crash before completion is an explicit 409, never an automatic
 // second generation whose tools CC may already have executed.
-export function createCcServer({ fetchMessages, cancelSession = async () => {}, resolveMessage, stateDir, token, upstreamTransport = "acp", statelessRequests = false,
+export function createCcServer({ fetchMessages, cancelSession = async () => {}, resolveMessage, listModels, stateDir, token, upstreamTransport = "acp", statelessRequests = false,
   maxRequestBytes = 32 * 1024 * 1024, maxResponseBytes = 32 * 1024 * 1024, maxRecords = 1024, upstreamCooldownMs = 0 }) {
   if (!token || !stateDir || typeof fetchMessages !== "function") throw new Error("token, stateDir and fetchMessages are required")
   fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 })
@@ -202,6 +203,11 @@ export function createCcServer({ fetchMessages, cancelSession = async () => {}, 
       }
       const key = req.headers["x-api-key"] || req.headers.authorization?.replace(/^Bearer /i, "")
       if (!authenticated(key, token)) throw fail(401, "Invalid bridge token")
+      if (req.method === "GET" && url.pathname === "/v1/models" && listModels) {
+        const page = modelPage(await listModels(), url.searchParams)
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(page))
+        return
+      }
       if (req.method !== "POST" || !["/v1/messages", "/v1/messages/count_tokens", "/v1/cancel"].includes(url.pathname)) {
         throw fail(404, "Unknown endpoint")
       }
@@ -241,6 +247,7 @@ export function createCcServer({ fetchMessages, cancelSession = async () => {}, 
       if (!Array.isArray(body.messages) || !body.messages.length || typeof body.model !== "string" || !body.model) {
         throw fail(400, "model and nonempty messages are required")
       }
+      body.model = upstreamModel(body.model)
       body.metadata = { ...body.metadata, user_id: sessionScope }
       const requestHash = hash(stable(body))
       const keyHeader = req.headers["idempotency-key"]
