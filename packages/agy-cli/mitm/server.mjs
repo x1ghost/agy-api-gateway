@@ -32,7 +32,7 @@ let modelProvider=createModelProvider({agy,workspace,env:carrier.env})
 const accountControl=accounts&&{
   current:()=>accounts.id,list:()=>accounts.list(),
   select:(id,inFlight)=>{
-    if(inFlight>1||broker.jobs.size)throw fail('Wait for active gateway requests to finish before switching accounts',409)
+    if(inFlight>1||[...broker.jobs.values()].some(job=>!job.done))throw fail('Wait for active gateway requests to finish before switching accounts',409)
     if(id===accounts.id)return accounts.list()
     const result=accounts.select(id)
     carrier.stop();carrier.env=accounts.env(carrierEnv)
