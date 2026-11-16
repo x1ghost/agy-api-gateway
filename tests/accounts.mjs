@@ -46,6 +46,14 @@ test('one gateway manually switches official CLI HOME and restores selection on 
   assert.equal((await add('third','another-token')).status,409)
   assert.equal((await add('broken','synthetic-token')).status,422);assert.ok(!fs.existsSync(path.join(state,'account-homes','broken')))
   assert.equal((await select('third')).status,200);assert.equal((await models()).data[0].id,'gemini-third')
+  const tokenFile=path.join(root,'refresh-token');fs.writeFileSync(tokenFile,'synthetic-file-refresh\n',{mode:0o600})
+  const runCli=(file)=>new Promise(resolve=>{
+    const child=spawn(process.execPath,['agy-account','add','fourth','--token-file',file],{env:{...process.env,AGY_CC_TOKEN:'t'.repeat(40),AGY_CC_PORT:String(p)},stdio:['ignore','pipe','pipe']})
+    let output='';child.stdout.on('data',x=>output+=x);child.stderr.on('data',x=>output+=x);child.on('close',code=>resolve({code,output}))
+  })
+  fs.chmodSync(tokenFile,0o644);const bad=await runCli(tokenFile);assert.notEqual(bad.code,0);assert.match(bad.output,/private regular file/)
+  fs.chmodSync(tokenFile,0o600);const ok=await runCli(tokenFile);assert.equal(ok.code,0);assert.ok(!ok.output.includes('synthetic-file-refresh'))
+  assert.equal(JSON.parse(fs.readFileSync(path.join(state,'account-homes','fourth','.gemini','antigravity-cli','antigravity-oauth-token'))).token.refresh_token,'synthetic-file-refresh')
   assert.equal((await select('missing')).status,400)
 })
 

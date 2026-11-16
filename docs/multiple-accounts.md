@@ -23,7 +23,7 @@ Run these commands on the Gateway host with the Gateway's API token in `AGY_CC_T
 ./agy-account add account-c
 ```
 
-Enter the refresh token at the hidden prompt. The Gateway creates a private HOME under its state directory, writes the AGY credential file, and asks the official CLI to list models to validate the login. It adds the account only after validation succeeds; it does not change the active account. A failed validation removes the newly created HOME. For non-interactive use, provide the token on standard input, not as a command-line argument. The credential layout is verified with AGY CLI 1.5.9 and may change in future versions. Adding an account requires no Gateway restart.
+Enter the refresh token at the hidden prompt. The Gateway creates a private HOME under its state directory, writes the AGY credential file, and asks the official CLI to list models to validate the login. It adds the account only after validation succeeds; it does not change the active account. A failed validation removes the newly created HOME. For agent or non-interactive use, run `./agy-account add account-c --token-file /path/to/token` with a private (mode 0600) regular file owned by the operator, or provide the token on standard input. Never put the token itself in command-line arguments. The credential layout is verified with AGY CLI 1.5.9 and may change in future versions. Adding an account requires no Gateway restart.
 
 To list and switch:
 
