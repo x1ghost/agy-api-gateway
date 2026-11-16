@@ -28,6 +28,33 @@ export function rewriteSystemIdentity(text) {
   }).join('')
 }
 
+// Preserve paths, URLs and filenames in tool descriptions: they may be
+// executable instructions, unlike product names in ordinary prose.
+export function rewriteToolDescription(text) {
+  return text.split(/(\s+)/).map(token=>{
+    if (/[\\/]/.test(token) || /(?:^|[(`'"\[])\.(?:claude|anthropic)\b/i.test(token) || /\b(?:claude|anthropic)\.[a-z0-9]{2,}\b/i.test(token)) return token
+    return token.replace(/\b(?:claude|anthropic)\b/gi,'Antigravity')
+  }).join('')
+}
+
+// CC describes its own products, model catalog and fast mode in environment
+// bullets. Remove only matching complete bullets; keep adjacent instructions.
+export function removeClientProductNotes(text) {
+  const lines=text.split(/(?<=\n)/)
+  const result=[]
+  for(let i=0;i<lines.length;) {
+    if(!/^\s*[-*]\s+\S/.test(lines[i])) {result.push(lines[i++]);continue}
+    const start=i++
+    while(i<lines.length && /^\s+\S/.test(lines[i]) && !/^\s*[-*]\s+\S/.test(lines[i])) i++
+    const bullet=lines.slice(start,i).join(''), normalized=bullet.toLowerCase().replace(/\s+/g,' ')
+    const product=/\b(?:claude|antigravity|anti gravity)\s+code\b/.test(normalized) && /\bcli\b/.test(normalized) && /desktop app/.test(normalized) && /\bide\b/.test(normalized)
+    const fast=/\bfast mode\b/.test(normalized) && /\/fast\b/.test(normalized) && /\b(?:claude|antigravity|anti gravity)\b/.test(normalized)
+    const models=/\bmodel ids\b/.test(normalized) && /\b(?:claude|antigravity|anti gravity)\b/.test(normalized) && /\b(?:opus|sonnet)\b/.test(normalized)
+    if(!product && !fast && !models) result.push(bullet)
+  }
+  return result.join('')
+}
+
 // Evidence fingerprint for the paragraph replaced by the default policy.
 export const KNOWN_REFUSED_SYSTEM_HASHES = new Set([
   '10591efdcea75a1645b7f19037b36c979849ad4ec27f11ce87a8393423597b44',

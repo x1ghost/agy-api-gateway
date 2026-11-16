@@ -2,7 +2,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { rewriteSystemIdentity, replaceKnownSecurity } from './system-policy.mjs'
+import { rewriteSystemIdentity, replaceKnownSecurity, removeClientProductNotes, rewriteToolDescription } from './system-policy.mjs'
 export const stable = value => JSON.stringify(value, (_k, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map(k => [k,v[k]])) : v)
 export const fail = (message, status = 400) => Object.assign(new Error(message), { status })
 const object = v => v && typeof v === 'object' && !Array.isArray(v)
@@ -218,7 +218,7 @@ export function projectCc(body, store) {
   const declarations=(body.tools||[]).map(t=>{
     if(!/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(t.name)||!object(t.input_schema))throw fail('Unsupported tool name or schema')
     // Keep JSON Schema intact, rather than silently weakening constraints.
-    return {name:t.name,description:t.description||'',parametersJsonSchema:structuredClone(t.input_schema)}
+    return {name:t.name,description:rewriteToolDescription(t.description||''),parametersJsonSchema:structuredClone(t.input_schema)}
   })
   if(new Set(declarations.map(t=>t.name)).size!==declarations.length)throw fail('Duplicate tool names')
   // Standard CC emits an Environment system message inside messages (often
@@ -271,7 +271,7 @@ export function projectCc(body, store) {
   }
   if(pending.length)throw fail('Cannot generate until every pending tool_result has arrived')
   if(contents.at(-1).role!=='user')throw fail('Assistant prefill is not implemented')
-  const system=[...textParts(body.system||''),...systemMessages.flatMap(m=>textParts(m.content))].map(p=>({text:process.env.AGY_CC_NATIVE_SECURITY_SWAP==='0' ? rewriteSystemIdentity(p.text) : replaceKnownSecurity(rewriteSystemIdentity(p.text))}))
+  const system=[...textParts(body.system||''),...systemMessages.flatMap(m=>textParts(m.content))].map(p=>{const text=removeClientProductNotes(rewriteSystemIdentity(p.text));return {text:process.env.AGY_CC_NATIVE_SECURITY_SWAP==='0' ? text : replaceKnownSecurity(text)}})
   const generationConfig={}
   if(display)generationConfig.thinkingConfig={includeThoughts:display==='summarized'}
   if(body.output_config?.effort!==undefined) {
