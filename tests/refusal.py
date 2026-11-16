@@ -37,6 +37,13 @@ with tempfile.TemporaryDirectory() as directory:
     saved['counts']['statuses'] = [500]
     state.write_text(json.dumps(saved))
     assert module.Bridge().refused
+    saved['acknowledgedStatusCount'] = 1
+    saved['refused'] = False
+    state.write_text(json.dumps(saved))
+    acknowledged = module.Bridge()
+    assert not acknowledged.refused and acknowledged.counts['statuses'] == [500]
+    acknowledged.report()
+    assert not module.Bridge().refused
     state.unlink()
     (Path(directory)/'proxy-summary.json').unlink()
     bridge = module.Bridge()
