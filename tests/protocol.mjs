@@ -69,12 +69,13 @@ test('HTTP tool roundtrip retains signed upstream call and does not repeat it on
 test('upstream 429 details and retry-after reach the client without a retry', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gateway-error-'))
   let broker, server, forwards = 0
+  const diagnostics = []
   const ctl = async (route, data) => {
     const response = await fetch(`http://127.0.0.1:${broker.server.address().port}${route}`, {method:'POST',headers:{authorization:'Bearer control'},body:JSON.stringify(data)})
     assert.equal(response.status, 200)
     return response.json()
   }
-  broker = new MitmBroker({token:'control',storeDir:path.join(root,'wire'),drive:async job=>{
+  broker = new MitmBroker({token:'control',storeDir:path.join(root,'wire'),logger: row => diagnostics.push(row),drive:async job=>{
     forwards++
     await ctl('/claim',{ticket:job.ticket,envelope:{model:'fixture',request:{contents:[{role:'user',parts:[{text:job.marker}]}]}}})
     const error = {error:{message:'Synthetic quota exhausted',status:'RESOURCE_EXHAUSTED',details:[{reason:'QUOTA'}]}}
@@ -92,4 +93,7 @@ test('upstream 429 details and retry-after reach the client without a retry', as
   assert.match(payload.error.message,/Synthetic quota exhausted/)
   assert.equal(payload.error.upstream_error.details[0].reason,'QUOTA')
   assert.equal(forwards,1)
+  assert.equal(diagnostics.length,1); assert.equal(diagnostics[0].status,429); assert.equal(diagnostics[0].model,'fixture')
+  assert.match(diagnostics[0].system_sha256,/^[a-f0-9]{64}$/)
+  assert.doesNotMatch(JSON.stringify(diagnostics),/Synthetic quota exhausted|hello/)
 })

@@ -1,5 +1,6 @@
 import http from 'node:http'
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
+import { AGY_NATIVE_SECURITY } from './system-policy.mjs'
 import { WireStore, WireTurn, projectCc, replaceRequest, fail } from './protocol.mjs'
 const errorResponse=e=>Response.json({type:'error',error:{type:e.status===429?'rate_limit_error':'invalid_request_error',message:e.message,...(e.upstreamError?{upstream_error:e.upstreamError}:{})}},{status:e.status||502,headers:{'x-should-retry':'false',...(e.retryAfter?{'retry-after':e.retryAfter}:{})}})
 function upstreamFailure(status, encoded, retryAfter) {
@@ -20,7 +21,7 @@ function upstreamFailure(status, encoded, retryAfter) {
 const cancelled=message=>Object.assign(fail(message,409),{cancelled:true})
 const sse=(name,value)=>new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(value)}\n\n`)
 export class MitmBroker {
-  constructor({token,storeDir,drive,preflight,timeoutMs=120000}) { if(!token)throw Error('Control token required');this.token=token;this.store=new WireStore(storeDir);this.drive=drive;this.preflight=preflight;this.timeoutMs=timeoutMs;this.jobs=new Map();this.terminal=new Map();this.server=http.createServer((q,s)=>this.control(q,s)) }
+  constructor({token,storeDir,drive,preflight,timeoutMs=120000,logger=row=>{if(process.env.AGY_DIAGNOSTICS!=='0')process.stderr.write('agy_request '+JSON.stringify(row)+'\n')}}) { if(!token)throw Error('Control token required');this.token=token;this.store=new WireStore(storeDir);this.drive=drive;this.preflight=preflight;this.timeoutMs=timeoutMs;this.logger=logger;this.jobs=new Map();this.terminal=new Map();this.server=http.createServer((q,s)=>this.control(q,s)) }
   remember(ticket,state){this.terminal.set(ticket,{state,at:Date.now()});this.prune()}
   prune(){for(const [ticket,row] of this.terminal)if(Date.now()-row.at>600000)this.terminal.delete(ticket);while(this.terminal.size>1024)this.terminal.delete(this.terminal.keys().next().value)}
   async listen() { await new Promise(r=>this.server.listen(0,'127.0.0.1',r));return this.server.address().port }
@@ -29,8 +30,16 @@ export class MitmBroker {
   cancelSession=async scope=>{for(const j of this.jobs.values())if(j.scope===scope)j.abort(cancelled('CC cancelled'))}
   fetch=async (url,options)=>{
     if(url.endsWith('/count_tokens'))return errorResponse(fail('Exact token counting is not implemented',400))
-    let body
-    try {body=JSON.parse(options.body);const projected=projectCc(body,this.store);this.preflight?.(projected)}catch(e){return errorResponse(e)}
+    let body,projected
+    const started=Date.now()
+    try {body=JSON.parse(options.body);projected=projectCc(body,this.store);this.preflight?.(projected)}catch(e){return errorResponse(e)}
+    const system=JSON.stringify(projected.systemInstruction.parts), systemText=projected.systemInstruction.parts.map(p=>p.text).join('\n')
+    const diagnostic={request_id:options.requestId,model:/^[A-Za-z0-9._/-]{1,160}$/.test(body.model)?body.model:'<invalid>',system_sha256:createHash('sha256').update(system).digest('hex'),system_bytes:Buffer.byteLength(system),native_safety_blocks:systemText.split(AGY_NATIVE_SECURITY).length-1,messages:body.messages.length,tools:(body.tools||[]).length,max_tokens:body.max_tokens??null,thinking:body.thinking?.type??null}
+    let logged=false
+    const log=(status,origin,usage)=>{
+      if(logged)return;logged=true
+      try {this.logger({event:'generation',time:new Date().toISOString(),...diagnostic,status,origin,duration_ms:Date.now()-started,...(usage?{usage}: {})})} catch {} // Diagnostics never block model delivery.
+    }
     const ticket=randomUUID().replaceAll('-','');let resolveResponse,resolveCompletion,stream,controller
     const completion=new Promise(r=>{resolveCompletion=r})
     const response=new Promise(r=>{resolveResponse=r})
@@ -47,11 +56,12 @@ export class MitmBroker {
       chunk:bytes=>{if(job.status!==200||!job.turn)throw fail('Chunk before successful headers',409);job.turn.push(bytes)},
       end:()=>{
         if(!job.turn)throw fail('End before headers',409)
-        const result=job.turn.finish();job.done=true;this.remember(ticket,'complete');clearTimeout(job.timer);resolveCompletion()
+        const result=job.turn.finish();log(200,'upstream',result.usage);job.done=true;this.remember(ticket,'complete');clearTimeout(job.timer);resolveCompletion()
         if(body.stream)controller.close();else resolveResponse(Response.json(result))
       },
       abort:e=>{
         if(job.done)return
+        log(e.status||502,job.status!==null?'upstream':'gateway')
         if(job.responseStarted){job.emit('error',{type:'error',error:{type:e.status===429?'rate_limit_error':'api_error',message:e.message}});controller.close()}
         else resolveResponse(errorResponse(e))
         job.done=true;this.remember(ticket,e.cancelled?'cancelled':'failed');clearTimeout(job.timer);resolveCompletion();job.cancel?.()
