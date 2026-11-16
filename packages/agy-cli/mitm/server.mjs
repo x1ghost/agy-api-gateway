@@ -24,7 +24,7 @@ const controlToken=randomBytes(32).toString('hex')
 const broker=new MitmBroker({token:controlToken,storeDir:path.join(state,'wire'),drive:carrier.run,preflight:assertForwardableSystem})
 const controlPort=await broker.listen()
 fs.writeFileSync(path.join(state,'control.json'),JSON.stringify({port:controlPort,token:controlToken}),{mode:0o600})
-const http=createCcServer({fetchMessages:broker.fetch,cancelSession:broker.cancelSession,resolveMessage:broker.resolveMessage,listModels:createModelProvider({agy,workspace,env:carrierEnv}),stateDir:path.join(state,'journal'),token,upstreamTransport:'mitm-no-mcp',upstreamCooldownMs:300000,statelessRequests:true})
+const http=createCcServer({fetchMessages:broker.fetch,cancelSession:broker.cancelSession,resolveMessage:broker.resolveMessage,listModels:createModelProvider({agy,workspace,env:carrierEnv}),stateDir:path.join(state,'journal'),token,upstreamTransport:'mitm-no-mcp',statelessRequests:true})
 http.server.listen(port,'127.0.0.1',()=>process.stderr.write(`Anthropic-compatible gateway on 127.0.0.1:${port}\n`))
 let closing=false
 async function close(){if(closing)return;closing=true;await http.close();carrier.stop();await broker.close()}

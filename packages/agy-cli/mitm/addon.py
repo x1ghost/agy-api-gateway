@@ -38,7 +38,7 @@ class Bridge:
   if state_file.exists():
    try:
     saved=json.loads(state_file.read_text());counts=saved['counts']
-    if saved['version']!=1 or set(counts)!=set(self.counts):raise ValueError('Invalid state schema')
+    if saved['version'] not in (1,2) or set(counts)!=set(self.counts):raise ValueError('Invalid state schema')
     if any(type(counts[k]) is not int or counts[k]<0 for k in counts if k!='statuses'):raise ValueError('Invalid counters')
     if not isinstance(counts['statuses'],list) or len(counts['statuses'])>counts['forwarded'] or any(type(x) is not int or not 100<=x<=599 for x in counts['statuses']):raise ValueError('Invalid statuses')
     if type(saved['serial']) is not int or saved['serial']<0 or type(saved['refused']) is not bool:raise ValueError('Invalid gate state')
@@ -48,7 +48,13 @@ class Bridge:
     if budget is not None and (type(budget) is not int or budget<1 or counts['forwarded']>budget):raise ValueError('Invalid budget')
     if counts['forwarded'] and (budget is None or not stamp):raise ValueError('Missing forward reservation')
     self.counts=counts;self.serial=saved['serial'];self.budget=budget;self.inflight=set(pending);self.last_forward_at=stamp
-    self.refused=saved['refused'] or bool(pending) or bool(counts['upstream429'] or counts['controlErrors']) or any(x>=400 for x in counts['statuses'])
+    # v1 conflated upstream 429 with uncertain failures. Clear only a fully
+    # accounted 429-only stop; preserve all ambiguous or other failure states.
+    legacy_429_only=(saved['version']==1 and saved['refused'] and counts['upstream429']>0
+                     and counts['controlErrors']==0 and not pending
+                     and len(counts['statuses'])==counts['forwarded']
+                     and all(x<400 or x==429 for x in counts['statuses']))
+    self.refused=(saved['refused'] and not legacy_429_only) or bool(pending) or bool(counts['controlErrors']) or any(x>=400 and x!=429 for x in counts['statuses'])
     if stamp:self.last_forward=time.monotonic()-max(0,time.time()-stamp)
    except Exception as e:raise RuntimeError('Invalid durable proxy state; use an explicitly new experiment scope, never reset silently') from e
   elif (STATE/'proxy-summary.json').exists():
@@ -75,7 +81,7 @@ class Bridge:
   finally:tmp.unlink(missing_ok=True)
  def report(self):
   try:
-   self.atomic('proxy-state.json',{'version':1,'counts':self.counts,'serial':self.serial,'refused':self.refused,'inflight':sorted(self.inflight),'budget':self.budget,'lastForwardAt':self.last_forward_at})
+   self.atomic('proxy-state.json',{'version':2,'counts':self.counts,'serial':self.serial,'refused':self.refused,'inflight':sorted(self.inflight),'budget':self.budget,'lastForwardAt':self.last_forward_at})
    self.atomic('proxy-summary.json',self.counts)
   except Exception:
    self.refused=True
@@ -163,7 +169,7 @@ class Bridge:
   flow.response.headers['content-type']='text/event-stream'
   flow.response.stream=lambda chunk:b'' if chunk else ack()
   self.counts['statuses'].append(status)
-  if status>=400:self.refused=True
+  if status>=400 and status!=429:self.refused=True
   if status==429:self.counts['upstream429']+=1
   try:
    self.report()

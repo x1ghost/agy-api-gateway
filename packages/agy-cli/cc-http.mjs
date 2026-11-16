@@ -20,23 +20,10 @@ const authenticated = (left, right) => {
 // A process crash before completion is an explicit 409, never an automatic
 // second generation whose tools CC may already have executed.
 export function createCcServer({ fetchMessages, cancelSession = async () => {}, resolveMessage, listModels, stateDir, token, upstreamTransport = "acp", statelessRequests = false,
-  maxRequestBytes = 32 * 1024 * 1024, maxResponseBytes = 32 * 1024 * 1024, maxRecords = 1024, upstreamCooldownMs = 0 }) {
+  maxRequestBytes = 32 * 1024 * 1024, maxResponseBytes = 32 * 1024 * 1024, maxRecords = 1024 }) {
   if (!token || !stateDir || typeof fetchMessages !== "function") throw new Error("token, stateDir and fetchMessages are required")
   fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 })
   fs.chmodSync(stateDir, 0o700)
-  if (!Number.isSafeInteger(upstreamCooldownMs) || upstreamCooldownMs < 0) throw new Error("Invalid upstream cooldown")
-  const cooldownPath = path.join(stateDir, "upstream-cooldown.json")
-  let cooldownUntil = 0
-  try { cooldownUntil = Number(JSON.parse(fs.readFileSync(cooldownPath, "utf8")).until) || 0 } catch (error) {
-    if (error.code !== "ENOENT") throw error
-  }
-  function rateLimited() {
-    if (!upstreamCooldownMs) return
-    cooldownUntil = Math.max(cooldownUntil, Date.now() + upstreamCooldownMs)
-    const temporary = cooldownPath + ".tmp"
-    fs.writeFileSync(temporary, JSON.stringify({ until: cooldownUntil }), { mode: 0o600 })
-    fs.renameSync(temporary, cooldownPath)
-  }
   const records = new Map()
   const busy = new Map()
   let shuttingDown = false
@@ -86,7 +73,6 @@ export function createCcServer({ fetchMessages, cancelSession = async () => {}, 
       const response = await fetchMessages("agy://local/v1/messages", {
         method: "POST", body: JSON.stringify(body), signal: record.controller.signal, requestId: record.meta.id,
       })
-      if (response.status === 429) rateLimited()
       record.meta.statusCode = response.status
       record.meta.headers = Object.fromEntries(response.headers)
       // Do not forward hop-by-hop or byte-length headers onto a replay.
@@ -97,28 +83,11 @@ export function createCcServer({ fetchMessages, cancelSession = async () => {}, 
       wake(record)
       const reader = response.body?.getReader()
       record.reader = reader
-      const decoder = new TextDecoder()
-      let sseTail = ""
-      const observesSse = upstreamCooldownMs > 0 && response.headers.get("content-type")?.includes("text/event-stream")
       for (;;) {
         const next = reader ? await reader.read() : { done: true }
         if (next.done) break
         if (record.controller.signal.aborted) throw new Error("Request cancelled")
         const chunk = Buffer.from(next.value)
-        if (observesSse) {
-          sseTail += decoder.decode(next.value, { stream: true })
-          let boundary
-          while ((boundary = sseTail.indexOf("\n\n")) >= 0) {
-            const frame = sseTail.slice(0, boundary)
-            sseTail = sseTail.slice(boundary + 2)
-            if (!/^event:\s*error\s*$/m.test(frame)) continue
-            const data = frame.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n")
-            let payload
-            try { payload = JSON.parse(data) } catch { continue }
-            if (payload.error?.type === "rate_limit_error") rateLimited()
-          }
-          if (sseTail.length > maxResponseBytes) throw new Error("Oversized SSE frame")
-        }
         record.bytes += chunk.length
         if (record.bytes > maxResponseBytes) throw new Error("Response exceeds the configured journal byte limit")
         let offset = 0
@@ -258,11 +227,6 @@ export function createCcServer({ fetchMessages, cancelSession = async () => {}, 
       if (meta && meta.requestHash !== requestHash) throw fail(409, "Idempotency-Key was already used with a different body")
       if (meta && !record) { await replay(meta, res); return }
       if (!record) {
-        if (upstreamCooldownMs && Date.now() < cooldownUntil) {
-          const error = fail(429, "Official AGY refused the previous request; bridge cooldown is active. No new model request was sent.")
-          error.retryAfter = Math.max(1, Math.ceil((cooldownUntil - Date.now()) / 1000))
-          throw error
-        }
         const previous = busy.get(sessionScope)
         if (previous) {
           if (previous.subscribers.size) throw fail(409, "This CC branch already has an active HTTP response")
