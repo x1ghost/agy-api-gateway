@@ -72,4 +72,31 @@ with tempfile.TemporaryDirectory() as directory:
         assert bridge.counts['upstream429'] == 1 and not bridge.refused
         assert not module.Bridge().refused
     asyncio.run(check())
+    # Account mode preserves the old gate for the current HOME and keeps a
+    # refusal on one account from stopping another, including after restart.
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    with tempfile.TemporaryDirectory() as isolated:
+        original_state = module.STATE
+        original_home = os.environ.get('HOME')
+        try:
+            module.STATE = Path(isolated)
+            home_a = Path(isolated)/'home-a'; home_b = Path(isolated)/'home-b'
+            home_a.mkdir(); home_b.mkdir(); os.environ['HOME'] = str(home_a)
+            config = Path(isolated)/'accounts.json'
+            config.write_text(json.dumps({'accounts':[{'id':'a','home':str(home_a)},{'id':'b','home':str(home_b)}]}))
+            legacy = module.Bridge(module.STATE); legacy.counts['forwarded'] = 1
+            legacy.counts['statuses'] = [403]; legacy.last_forward_at = 1
+            legacy.refused = True; legacy.report()
+            pool = module.AccountBridge(config)
+            assert pool.bridge().refused and pool.bridge().counts['statuses'] == [403]
+            (Path(isolated)/'selected-account.json').write_text(json.dumps({'id':'b'}))
+            assert not pool.bridge().refused and pool.bridge().counts['forwarded'] == 0
+            pool.bridge().report()
+            assert not module.AccountBridge(config).bridge().refused
+            (Path(isolated)/'selected-account.json').write_text(json.dumps({'id':'a'}))
+            assert module.AccountBridge(config).bridge().refused
+        finally:
+            module.STATE = original_state
+            if original_home is None: os.environ.pop('HOME',None)
+            else: os.environ['HOME'] = original_home
 print('429 handling and durable migration passed')
