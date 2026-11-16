@@ -1,0 +1,10 @@
+{
+  "name": "agy-anthropic-gateway",
+  "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "type": "module",
+  "scripts": {
+    "usage": "node quota.mjs",
+    "test": "node --test tests/*.mjs"
+  }
+}

@@ -1,0 +1,11 @@
+import fs from "node:fs"
+const template = fs.readFileSync(new URL("./page.html", import.meta.url), "utf8")
+const svg = fs.readFileSync(new URL("./architecture.svg", import.meta.url), "utf8")
+if (template.split("<!-- ARCHITECTURE -->").length !== 2) throw new Error("Architecture marker must occur once")
+fs.writeFileSync(new URL("./index.html", import.meta.url), template.replace("<!-- ARCHITECTURE -->", svg))
+console.log("Built self-contained docs/vision/index.html")
+const context = fs.readFileSync(new URL("./context-page.html", import.meta.url), "utf8")
+const contextSvg = fs.readFileSync(new URL("./context.svg", import.meta.url), "utf8")
+if (context.split("<!-- CONTEXT_MAP -->").length !== 2) throw new Error("Context map marker must occur once")
+fs.writeFileSync(new URL("./context.html", import.meta.url), context.replace("<!-- CONTEXT_MAP -->", contextSvg))
+console.log("Built self-contained docs/vision/context.html (one context diagram)")
