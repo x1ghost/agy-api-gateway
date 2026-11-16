@@ -20,7 +20,7 @@ const authenticated = (left, right) => {
 // A process crash before completion is an explicit 409, never an automatic
 // second generation whose tools CC may already have executed.
 export function createCcServer({ fetchMessages, cancelSession = async () => {}, resolveMessage, listModels, stateDir, token, upstreamTransport = "acp", statelessRequests = false,
-  maxRequestBytes = 32 * 1024 * 1024, maxResponseBytes = 32 * 1024 * 1024, maxRecords = 1024 }) {
+  accountControl, maxRequestBytes = 32 * 1024 * 1024, maxResponseBytes = 32 * 1024 * 1024, maxRecords = 1024 }) {
   if (!token || !stateDir || typeof fetchMessages !== "function") throw new Error("token, stateDir and fetchMessages are required")
   fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 })
   fs.chmodSync(stateDir, 0o700)
@@ -57,15 +57,16 @@ export function createCcServer({ fetchMessages, cancelSession = async () => {}, 
   }
   function scope(req, body) {
     const id = req.headers["x-cc-session-id"] || body?.metadata?.user_id
+    const account = accountControl ? `account:${accountControl.current()}:` : ""
     if (id === undefined && statelessRequests && req.method === "POST" && req.url?.split("?")[0] === "/v1/messages") {
       const key = req.headers["idempotency-key"]
       if (key !== undefined && (typeof key !== "string" || !key || key.length > 256)) throw fail(400, "Invalid Idempotency-Key")
-      return key ? `gateway:${hash(key)}` : `gateway:${randomUUID()}`
+      return account + (key ? `gateway:${hash(key)}` : `gateway:${randomUUID()}`)
     }
     if (typeof id !== "string" || !id || id.length > 4096) {
       throw fail(400, "Provide CC metadata.user_id or X-CC-Session-ID; use a distinct ID for each branch")
     }
-    return `cc:${hash(id)}`
+    return account + `cc:${hash(id)}`
   }
   async function pump(record, body) {
     let fd
@@ -172,6 +173,17 @@ export function createCcServer({ fetchMessages, cancelSession = async () => {}, 
       }
       const key = req.headers["x-api-key"] || req.headers.authorization?.replace(/^Bearer /i, "")
       if (!authenticated(key, token)) throw fail(401, "Invalid bridge token")
+      if (accountControl && req.method === "GET" && url.pathname === "/gateway/accounts") {
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(accountControl.list()))
+        return
+      }
+      if (accountControl && req.method === "POST" && url.pathname === "/gateway/accounts/select") {
+        const body = await readBody(req)
+        if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.id !== "string") throw fail(400, "Expected an account id")
+        const result = accountControl.select(body.id, inFlight)
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(result))
+        return
+      }
       if (req.method === "GET" && url.pathname === "/v1/models" && listModels) {
         const page = modelPage(await listModels(), url.searchParams)
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(page))

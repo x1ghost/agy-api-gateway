@@ -2,7 +2,7 @@
 Default denies ALL model forwarding. Optional offline fixtures never contact
 model endpoints. This addon never obtains or stores authentication credentials.
 """
-import asyncio, base64, json, math, os, re, socket, time, uuid, urllib.request, urllib.error
+import asyncio, base64, json, math, os, re, shutil, socket, time, uuid, urllib.request, urllib.error
 from pathlib import Path
 from mitmproxy import http
 STATE=Path(os.environ['AGY_MITM_STATE_DIR'])
@@ -30,10 +30,11 @@ def control(endpoint,data):
   raise
 async def send(endpoint,data):return await asyncio.to_thread(control,endpoint,data)
 class Bridge:
- def __init__(self):
+ def __init__(self,state=STATE):
+  self.state=state
   self.counts={'forwarded':0,'fixtures':0,'blockedGenerations':0,'controlErrors':0,'upstream429':0,'statuses':[],'cancelledTickets':0}
   self.serial=0;self.refused=False;self.last_forward=0;self.last_forward_at=0;self.inflight=set();self.acknowledged_status_count=0;self.forward_lock=asyncio.Lock()
-  state_file=STATE/'proxy-state.json'
+  state_file=self.state/'proxy-state.json'
   if state_file.exists():
    try:
     saved=json.loads(state_file.read_text());counts=saved['counts']
@@ -56,7 +57,7 @@ class Bridge:
     self.refused=(saved['refused'] and not legacy_429_only) or bool(pending) or bool(counts['controlErrors']) or any(x>=400 and x!=429 for x in counts['statuses'][ack:])
     if stamp:self.last_forward=time.monotonic()-max(0,time.time()-stamp)
    except Exception as e:raise RuntimeError('Invalid durable proxy state; use an explicitly new experiment scope, never reset silently') from e
-  elif (STATE/'proxy-summary.json').exists():
+  elif (self.state/'proxy-summary.json').exists():
    raise RuntimeError('Legacy proxy scope has no durable gate state; explicit new scope required')
  def settled(self,flow):
   self.inflight.discard(flow.metadata.get('capture_index'));self.report()
@@ -68,13 +69,13 @@ class Bridge:
   if status.get('state')=='cancelled':raise TicketCancelled('CC cancelled this ticket')
   if status.get('state')!='active':raise ValueError('Ticket no longer active')
  def atomic(self,name,value):
-  STATE.mkdir(parents=True,exist_ok=True)
-  target=STATE/name;tmp=STATE/(name+'.'+uuid.uuid4().hex+'.tmp')
+  self.state.mkdir(parents=True,exist_ok=True,mode=0o700)
+  target=self.state/name;tmp=self.state/(name+'.'+uuid.uuid4().hex+'.tmp')
   try:
    fd=os.open(tmp,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
    with os.fdopen(fd,'w') as out:json.dump(value,out);out.flush();os.fsync(out.fileno())
    os.replace(tmp,target)
-   directory=os.open(STATE,os.O_RDONLY)
+   directory=os.open(self.state,os.O_RDONLY)
    try:os.fsync(directory)
    finally:os.close(directory)
   finally:tmp.unlink(missing_ok=True)
@@ -247,4 +248,52 @@ class Bridge:
   try:await send('/event',{'ticket':ticket,'kind':'error'})
   except Exception:pass
  def done(self):self.report()
-addons=[Bridge()]
+class AccountBridge:
+ # Per-account durable forwarding state; control and proxy remain shared.
+ def __init__(self,config_path):
+  config=json.loads(Path(config_path).read_text())
+  self.accounts={}
+  for account in config.get('accounts',[]):
+   name=account.get('id');home=account.get('home')
+   if not isinstance(name,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}',name) or name in self.accounts or not isinstance(home,str) or not os.path.isabs(home):raise RuntimeError('Invalid account config')
+   self.accounts[name]=home
+  if not self.accounts:raise RuntimeError('At least one account is required')
+  self.root=STATE/'account-proxy';self.bridges={}
+  # Preserve the existing single-account gate when account mode is enabled.
+  if (STATE/'proxy-state.json').exists() and not self.root.exists():
+   matches=[name for name,home in self.accounts.items() if os.path.realpath(home)==os.path.realpath(os.environ.get('HOME',''))]
+   if len(matches)!=1:raise RuntimeError('Configure the current HOME exactly once to preserve existing proxy state')
+   temp=STATE/('.account-proxy-'+uuid.uuid4().hex+'.tmp')
+   try:
+    target=temp/matches[0];target.mkdir(parents=True,mode=0o700)
+    for name in ('proxy-state.json','proxy-summary.json'):
+     source=STATE/name
+     if source.exists():shutil.copy2(source,target/name)
+    os.rename(temp,self.root)
+   finally:
+    if temp.exists():shutil.rmtree(temp)
+  self.default=next(iter(self.accounts))
+ def selected(self):
+  try:name=json.loads((STATE/'selected-account.json').read_text())['id']
+  except FileNotFoundError:name=self.default
+  if name not in self.accounts:raise RuntimeError('Selected account is not configured')
+  return name
+ def bridge(self):
+  name=self.selected()
+  if name not in self.bridges:self.bridges[name]=Bridge(self.root/name)
+  return self.bridges[name]
+ def running(self):self.bridge().report();(STATE/'proxy-ready').write_text('ready')
+ async def server_connect(self,data):await self.bridge().server_connect(data)
+ async def request(self,flow):
+  bridge=self.bridge();flow.metadata['account_bridge']=bridge
+  await bridge.request(flow)
+ def responseheaders(self,flow):
+  if flow.metadata.get('account_bridge'):flow.metadata['account_bridge'].responseheaders(flow)
+ async def response(self,flow):
+  if flow.metadata.get('account_bridge'):await flow.metadata['account_bridge'].response(flow)
+ async def error(self,flow):
+  if flow.metadata.get('account_bridge'):await flow.metadata['account_bridge'].error(flow)
+ def done(self):
+  for bridge in self.bridges.values():bridge.report()
+
+addons=[AccountBridge(os.environ['AGY_ACCOUNTS_CONFIG']) if os.environ.get('AGY_ACCOUNTS_CONFIG') else Bridge()]
