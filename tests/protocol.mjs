@@ -111,3 +111,21 @@ test('Claude streamed thought fragments replay as one signed thinking block', ()
   const projected=projectCc({model,messages:[user,{role:'assistant',content},{role:'user',content:[{type:'tool_result',tool_use_id:'toolu_test',content:'done'}]}],tools:[{name:'Read',input_schema:{type:'object'}}]},store)
   assert.deepEqual(projected.contents[1].parts,[{thought:true,text:'think once',thoughtSignature:'provider-signature'},{functionCall:{name:'Read',args:{path:'x'}}}])
 })
+
+test('switching models keeps visible tool history and removes old reasoning and signatures', t => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'agy-cross-'))
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}))
+  const source='claude-opus-fixture', target='gemini-fixture'
+  const user={role:'user',content:'synthetic'}, content=[{type:'thinking',thinking:'',signature:'agyref_fixture'}, {type:'text',text:'visible'}, {type:'tool_use',id:'toolu_cross',name:'Read',input:{path:'x'}}]
+  const original=[{thought:true,text:'secret thought',thoughtSignature:'thought-signature'}, {text:'visible',thoughtSignature:'text-signature'}, {functionCall:{name:'Read',args:{path:'x'},id:'original-id'},thoughtSignature:'tool-signature'}]
+  new WireStore(dir).save(source,[user],content,original)
+  const messages=[user,{role:'assistant',content},{role:'user',content:[{type:'tool_result',tool_use_id:'toolu_cross',content:'done'}]}]
+  const store=new WireStore(dir)
+  const projected=projectCc({model:target,messages,tools:[{name:'Read',input_schema:{type:'object'}}]},store)
+  assert.deepEqual(projected.contents[1].parts,[{text:'visible'},{functionCall:{name:'Read',args:{path:'x'},id:'original-id'}}])
+  assert.equal(projected.contents[2].parts[0].functionResponse.response.output,'done')
+  const split=[user,...content.map(block=>({role:'assistant',content:[block]})),messages[2]]
+  const splitProjection=projectCc({model:target,messages:split,tools:[{name:'Read',input_schema:{type:'object'}}]},new WireStore(dir))
+  assert.deepEqual(splitProjection.contents.filter(x=>x.role==='model').flatMap(x=>x.parts),[{text:'visible'},{functionCall:{name:'Read',args:{path:'x'},id:'original-id'}}])
+  assert.deepEqual(projectCc({model:source,messages,tools:[{name:'Read',input_schema:{type:'object'}}]},store).contents[1].parts,original)
+})

@@ -25,7 +25,7 @@ const hash = v => createHash('sha256').update(stable(v)).digest('hex')
 // The index matches the ENTIRE assistant message (including random CC IDs), not
 // tool names/arguments alone. It never supplies old user messages or tool results.
 export class WireStore {
-  constructor(dir) { this.dir=dir; this.memory=new Map(); this.retained=new Map(); if(dir) fs.mkdirSync(dir,{recursive:true,mode:0o700}) }
+  constructor(dir) { this.dir=dir; this.memory=new Map(); this.retained=new Map(); this.cross=new Map(); if(dir) fs.mkdirSync(dir,{recursive:true,mode:0o700}) }
   key(model, history, content) { return hash([model,history.filter(m=>m.role!=='system').map(m=>({role:m.role,content:canonicalBlocks(m.content)})),canonicalBlocks(content)]) }
   messageKey(model,content) { return blocks(content)?.some(b=>b.type==='tool_use'||b.type==='thinking') ? hash([model,canonicalBlocks(content)]) : null }
   read(file) {
@@ -71,6 +71,50 @@ export class WireStore {
     if(messageKey && ((existing!==undefined&&hash(existing)!==hash(value))||(record&&record.recordHash!==hash(value))))throw fail('Conflicting wire metadata',409)
     if(this.dir)this.write(path.join(this.dir,key+'.json'),value)
     this.memory.set(key,value);this.retain(messageKey,key,value)
+  }
+  // Look up the exact assistant message across models, including records
+  // created before cross-model replay was supported. Never guess tool inputs.
+  getCross(content, model=null) {
+    const canonical=canonicalBlocks(content), contentKey=hash([model,canonical])
+    const match=value=>{
+      if(value?.version!==2||!Array.isArray(value.content)||!Array.isArray(value.parts))return false
+      // CC may persist streamed blocks as separate assistant messages.
+      let offset=0
+      return canonical.every(block=>{
+        const index=value.content.findIndex((part,i)=>i>=offset&&stable(part)===stable(block))
+        if(index<0)return false
+        offset=index+1;return true
+      })
+    }
+    let value=this.cross.get(contentKey)
+    if(!value) {
+      let names=[...this.retained.keys()].map(key=>key+'.json')
+      if(this.dir) {
+        try { names=[...new Set([...names,...fs.readdirSync(path.join(this.dir,'retained'))])] }
+        catch(e) { if(e.code!=='ENOENT')throw e }
+      }
+      for(const name of names) {
+        if(!/^[a-f0-9]{64}\.json$/.test(name))continue
+        const record=this.index(name.slice(0,-5))
+        if(record?.version!==2)continue
+        const candidate=this.raw(record.wireKey)
+        if(!match(candidate)||model&&this.messageKey(model,candidate.content)!==record.messageKey)continue
+        if(hash(candidate)!==record.recordHash)throw fail('Damaged retained wire metadata',409)
+        value=candidate;this.cross.set(contentKey,value);break
+      }
+    }
+    if(!value)return undefined
+    if(!match(value))throw fail('Invalid retained wire metadata',409)
+    const calls=value.content.filter(b=>b.type==='tool_use'), wire=value.parts.filter(p=>p?.functionCall)
+    if(calls.length!==wire.length||calls.some((c,i)=>c.name!==wire[i].functionCall.name))throw fail('Tool call differs from wire metadata',409)
+    // Retain only the blocks CC actually sent, even if the original response
+    // contained more blocks. Reasoning and old signatures do not cross models.
+    return canonical.flatMap(block=>{
+      if(block.type==='thinking')return model?structuredClone(value.parts.filter(part=>part.thought===true)):[]
+      if(block.type==='text')return [{text:block.text}]
+      if(block.type==='tool_use')return [structuredClone(wire[calls.findIndex(c=>stable(c)===stable(block))])]
+      throw fail('Unsupported assistant content')
+    })
   }
   get(model, history, content) {
     const key=this.key(model,history,content),messageKey=this.messageKey(model,content)
@@ -160,6 +204,13 @@ function replayParts(model, wire) {
   }
   return result
 }
+// Official AGY retains visible history and tool calls on model changes, but
+// omits the old model's reasoning and signatures.
+function crossModelParts(wire) {
+  return wire.filter(part=>part.thought!==true).map(part=>{
+    const result={...part};delete result.thoughtSignature;return result
+  }).filter(part=>Object.keys(part).length&&!(part.text===''&&Object.keys(part).length===1))
+}
 export function projectCc(body, store) {
   if(!object(body)||typeof body.model!=='string'||!Array.isArray(body.messages)||!body.messages.length)throw fail('model and messages required')
   const display=thinkingDisplay(body)
@@ -189,12 +240,16 @@ export function projectCc(body, store) {
           if(typeof b.thinking!=='string'||typeof b.signature!=='string'||!b.signature)throw fail('Invalid thinking history')
         } else if(b.type!=='text')throw fail('Unsupported assistant content')
       }
-      const wire=store.get(body.model,messages.slice(0,i),bs)
+      let wire=store.get(body.model,messages.slice(0,i),bs),crossModel=false
+      if(!wire&&(pending.length||bs.some(b=>b.type==='thinking'))) {
+        wire=store.getCross(bs,body.model)
+        if(!wire) { wire=store.getCross(bs);crossModel=!!wire }
+      }
       if((pending.length||bs.some(b=>b.type==='thinking')) && !wire)throw fail('Tool/thinking history has no matching wire metadata; do not regenerate or invent signatures',409)
       // AGY can stream empty untyped text fragments. Claude rejects an empty
       // historical text block; discard only inert fragments, never signatures.
-      const parts=wire ? replayParts(body.model,wire) : textParts(bs)
-      contents.push({role:'model',parts})
+      const parts=wire ? (crossModel?crossModelParts(wire):replayParts(body.model,wire)) : textParts(bs)
+      if(parts.length)contents.push({role:'model',parts})
     } else {
       const results=bs.filter(b=>b.type==='tool_result'), other=bs.filter(b=>b.type!=='tool_result')
       if(results.length!==pending.length || new Set(results.map(r=>r.tool_use_id)).size!==results.length || results.some(r=>!pending.some(c=>c.id===r.tool_use_id)))throw fail('Incomplete, duplicate or orphan tool_result')

@@ -46,13 +46,13 @@ The service listens on `127.0.0.1:3437`. Pass the token as `x-api-key` or `Autho
 
 Only the gateway and its child CLI trust the proxy's private CA; the system trust store is not modified. The gateway intentionally intercepts and translates the CLI's model traffic. Do not expose its loopback listener directly to the internet; remote access needs an authenticated, encrypted transport managed by the operator.
 
-The forwarding gate defaults to 128 requests, retains counters and stops on non-429 upstream errors or uncertain failure. Set `AGY_MITM_MAX_FORWARDS` before first start to select a positive budget. An upstream 429 is returned to its caller without stopping other requests. Restarting does not reset a budget or other refusal. No automatic account switching is performed. Consult [compatibility](docs/compatibility.md) for system-instruction transformations and refusal protection.
+The forwarding gate retains counters and stops on non-429 upstream errors or uncertain failure. An upstream 429 is returned to its caller without stopping other requests. Restarting does not reset a refusal. No automatic account switching is performed. Consult [compatibility](docs/compatibility.md) for system-instruction transformations and refusal protection.
 
 The known CC safety paragraph is replaced with the native AGY safety instruction by default; set `AGY_CC_NATIVE_SECURITY_SWAP=0` to disable that substitution.
 
 ## Account quota
 
-Run `./agy-usage` as the gateway's OS user with its `HOME`, `AGY_PATH` and `AGY_MITM_STATE_DIR` to read the gateway's private, timestamped quota cache. `./agy-usage --refresh` explicitly runs the official CLI `/usage` command and replaces that cache only on success. It may make network requests and does not invoke a model. Use the same proxy and CA environment as the gateway when the host needs it; CLI output reports the current login's available quota windows, which may be unknown or stale. The snapshot is not bound to an account identity; refresh after a login change. This is separate from per-response token usage and gateway request budgets.
+Run `./agy-usage` as the gateway's OS user with its `HOME`, `AGY_PATH` and `AGY_MITM_STATE_DIR` to read the gateway's private, timestamped quota cache. `./agy-usage --refresh` explicitly runs the official CLI `/usage` command and replaces that cache only on success. It may make network requests and does not invoke a model. Use the same proxy and CA environment as the gateway when the host needs it; CLI output reports the current login's available quota windows, which may be unknown or stale. The snapshot is not bound to an account identity; refresh after a login change. This is separate from per-response token usage and gateway request counts.
 
 ## Development
 

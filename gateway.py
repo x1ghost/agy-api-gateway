@@ -41,16 +41,14 @@ def main():
     node = executable(os.environ.get('NODE_PATH', 'node'))
     port = int(os.environ.get('AGY_CC_PORT', '3437'))
     proxy_port = int(os.environ.get('AGY_MITM_PROXY_PORT', '3441'))
-    budget = int(os.environ.get('AGY_MITM_MAX_FORWARDS', '128'))
-    if not 1 <= port <= 65535 or not 1 <= proxy_port <= 65535 or port == proxy_port or budget < 1:
-        raise SystemExit('Invalid ports or request budget')
+    if not 1 <= port <= 65535 or not 1 <= proxy_port <= 65535 or port == proxy_port:
+        raise SystemExit('Invalid ports')
     ca_dir = state / 'ca'
     ca_dir.mkdir(mode=0o700, exist_ok=True)
     ready = state / 'proxy-ready'
     ready.unlink(missing_ok=True)
     env = os.environ.copy()
-    env.update(AGY_MITM_STATE_DIR=str(state), AGY_MITM_ALLOW_MODEL_FORWARD='1',
-               AGY_MITM_MAX_FORWARDS=str(budget))
+    env.update(AGY_MITM_STATE_DIR=str(state), AGY_MITM_ALLOW_MODEL_FORWARD='1')
     proxy_env = env.copy()
     proxy_env.pop('AGY_CC_TOKEN', None)
     proxy = subprocess.Popen([mitmdump, '--listen-host', '127.0.0.1', '--listen-port', str(proxy_port),
