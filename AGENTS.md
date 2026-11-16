@@ -50,7 +50,7 @@ The service listens on `127.0.0.1:3437`. Pass the token as `x-api-key` or `Autho
 
 Only the gateway and its child CLI trust the proxy's private CA; the system trust store is not modified. The gateway intentionally intercepts and translates the CLI's model traffic. Do not expose its loopback listener directly to the internet; remote access needs an authenticated, encrypted transport managed by the operator.
 
-The forwarding gate retains counters and stops on non-429 upstream errors or uncertain failure. An upstream 429 is returned to its caller without stopping other requests. Restarting does not reset a refusal. No automatic account switching is performed. An optional account router can select separate per-user gateway instances using client tokens; see [multiple accounts](docs/multiple-accounts.md). Consult [compatibility](docs/compatibility.md) for system-instruction transformations and refusal protection.
+The forwarding gate retains counters and stops on non-429 upstream errors or uncertain failure. An upstream 429 is returned to its caller without stopping other requests. Restarting does not reset a refusal. No automatic account switching is performed. Optional manual selection can switch the official CLI between private account HOME directories; see [multiple accounts](docs/multiple-accounts.md). Consult [compatibility](docs/compatibility.md) for system-instruction transformations and refusal protection.
 
 The known CC safety paragraph is replaced with the native AGY safety instruction by default; set `AGY_CC_NATIVE_SECURITY_SWAP=0` to disable that substitution.
 

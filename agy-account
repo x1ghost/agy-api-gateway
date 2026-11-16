@@ -1,0 +1,11 @@
+#!/usr/bin/env node
+// Operator command: all account changes remain explicit.
+const [action,id,...extra]=process.argv.slice(2)
+if(extra.length||!['list','select'].includes(action)||action==='list'&&id||action==='select'&&!id){process.stderr.write('Usage: agy-account list | agy-account select ACCOUNT_ID\n');process.exit(2)}
+const token=process.env.AGY_CC_TOKEN,port=Number(process.env.AGY_CC_PORT||3437)
+if(!token||!Number.isInteger(port)||port<1||port>65535){process.stderr.write('Set AGY_CC_TOKEN and a valid AGY_CC_PORT\n');process.exit(2)}
+try {
+  const response=await fetch(`http://127.0.0.1:${port}/gateway/accounts${action==='select'?'/select':''}`,{method:action==='select'?'POST':'GET',headers:{'x-api-key':token,...(id?{'content-type':'application/json'}:{})},...(id?{body:JSON.stringify({id})}:{})})
+  const body=await response.text()
+  if(!response.ok){process.stderr.write(body+'\n');process.exitCode=1}else process.stdout.write(body+'\n')
+} catch {process.stderr.write('Account control unavailable\n');process.exitCode=1}

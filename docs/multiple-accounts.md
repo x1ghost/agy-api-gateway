@@ -1,45 +1,29 @@
-# Multiple accounts with isolated Linux users
+# Manual account selection
 
-Run one ordinary gateway and official AGY CLI per Linux service user. Each user owns its own private HOME, AGY credentials, state directory, API token, gateway port, and proxy port. A separate router exposes one loopback endpoint and selects the backend using the client's API token. The router is optional; a client can instead connect to an individual backend directly.
+One Gateway and its process-local proxy serve all clients. The operator manually chooses an AGY login; the Gateway restarts the official CLI carrier with that account's HOME. The selection is global for this gateway, so all clients use the selected account. There is no automatic account selection, load balancing, or retry on a different account.
 
-The current gateway does not sign in or import refresh tokens. Provision the official CLI login for each service user using the CLI's supported workflow or the operator's existing credential provisioning procedure. In one observed AGY CLI installation, credentials were under `$HOME/.gemini/antigravity-cli/antigravity-oauth-token` and `$HOME/.config/antigravity/credential-user-scope`; credential format and refresh behavior are CLI-version dependent and have not been validated by this router. Keep each HOME private and owned by its service user. Never put actual credentials in the repository, a command line, or diagnostics.
+The current implementation isolates accounts by private HOME directories owned by the same Linux user as the Gateway. It does **not** yet run AGY under separate Linux users: doing so requires a separately configured privilege boundary and access to the proxy's private trust bundle and workspace. Do not run the gateway as root to achieve this. Multiple Linux users and credential import/refresh automation remain future work.
 
-## Backends
+For each account, provision an official CLI login in its private HOME using the operator's existing AGY credential procedure. A credential file was observed under `$HOME/.gemini/antigravity-cli/antigravity-oauth-token`; format and refresh behavior depend on the official CLI version. The Gateway does not read refresh tokens or implement OAuth refresh.
 
-For each account, create a dedicated non-login Linux system user and run `gateway.py` as that user. Configure distinct values in its private environment file:
-
-```
-HOME=/var/lib/agy-account-a
-AGY_MITM_STATE_DIR=/var/lib/agy-account-a/gateway-state
-AGY_CC_PORT=3511
-AGY_MITM_PROXY_PORT=3611
-AGY_CC_TOKEN=<backend-token-a>
-AGY_PATH=/path/to/official/agy
-```
-
-Create the HOME and gateway state with mode 0700, owned by that user; use an environment file with mode 0600. For each additional account use a different service user, HOME, state directory, gateway port, proxy port, and backend token. Each account's official AGY installation must be executable by its service user. Run and monitor each gateway using the host's service manager; do not run the CLI as root. The Gateway itself does not need permission to read other users' HOME directories.
-
-## Router
-
-Create a private JSON configuration file owned by the router's Linux user with mode 0600 (the file must not be a symbolic link). Replace every placeholder with a distinct random token of at least 32 characters; a backend token must match its corresponding `AGY_CC_TOKEN`. Router client tokens must be unique.
+Create a private JSON configuration file owned by the Gateway user, mode 0600. Each HOME must be an absolute path to an existing private, non-symlink directory owned by that user. Example:
 
 ```json
-{
-  "accounts": [
-    {"id":"account-a", "client_token":"<client-token-a>", "backend":"http://127.0.0.1:3511", "backend_token":"<backend-token-a>"},
-    {"id":"account-b", "client_token":"<client-token-b>", "backend":"http://127.0.0.1:3512", "backend_token":"<backend-token-b>"}
-  ]
-}
+{"accounts":[
+  {"id":"account-a","home":"/var/lib/agy-accounts/a"},
+  {"id":"account-b","home":"/var/lib/agy-accounts/b"}
+]}
 ```
 
-Start the router under its own service user, pointing at the config file:
+Set `AGY_ACCOUNTS_CONFIG` to the config's absolute path in the Gateway environment and restart. The first account is selected on first startup; the selected ID persists in the Gateway state directory. The account IDs are operator-defined labels and should not contain personal information.
+
+Run these commands on the Gateway host with the Gateway's API token in `AGY_CC_TOKEN` and, if changed, `AGY_CC_PORT`:
 
 ```sh
-export AGY_ROUTER_CONFIG=/absolute/path/to/private/router.json
-export AGY_CC_PORT=3437
-node packages/agy-cli/router/server.mjs
+./agy-account list
+./agy-account select account-b
 ```
 
-The router listens only on `127.0.0.1`. A client's `x-api-key` or Bearer token selects its account; the router replaces it with the backend token. Model discovery, inference, streaming, idempotency, errors, and cancellation are handled by the selected backend. Switching the client token changes accounts. Config changes require a router restart. The router forwards a backend's errors without retrying on another account. Its `agy_account` diagnostics contain only account ID and HTTP status, not tokens or request content.
+The corresponding authenticated endpoints are `GET /gateway/accounts` and `POST /gateway/accounts/select` with `{"id":"account-b"}`. A switch is rejected while a request or model discovery is active. It retires the previous carrier, uses the new HOME for subsequent CLI launches, and refreshes model discovery on its next use. In-flight requests are never moved or retried. Existing model-list caching remains per active carrier and is discarded on switch.
 
-Model lists and quota are account-specific. Use `agy-usage` as the selected backend's service user with its own HOME and state directory. A router health response means the router is running; it does not check whether each backend or AGY login is healthy. Existing per-backend signed tool and thinking history is private to that backend. Until cross-account history migration is implemented and verified, start a new conversation after switching accounts; an existing session may return 409 when its retained metadata is unavailable on the new backend.
+The response journal and signed tool/thinking metadata are scoped by account, so switching accounts in an existing conversation may fail if the new account lacks the prior response metadata. Start a new conversation after a switch until cross-account continuation has been validated. Switching does not clear or bypass the proxy's durable refusal state: a prior non-429 error can still require operator recovery. Existing cached usage is not account-bound; refresh it for the selected account using the matching HOME and state, or treat it as stale.
