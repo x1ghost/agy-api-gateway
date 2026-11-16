@@ -22,10 +22,14 @@ with tempfile.TemporaryDirectory() as directory:
              'budget':128,'lastForwardAt':1}
     state.write_text(json.dumps(saved))
     bridge = module.Bridge()
-    assert not bridge.refused
+    assert not bridge.refused and not hasattr(bridge,'budget')
     bridge.report()
     assert json.loads(state.read_text())['version'] == 2
+    assert 'budget' not in json.loads(state.read_text())
     assert not module.Bridge().refused
+    exhausted = dict(saved, counts=dict(counts, forwarded=129, statuses=[200]*129, upstream429=0), refused=False)
+    state.write_text(json.dumps(exhausted))
+    assert not module.Bridge().refused and module.Bridge().counts['forwarded'] == 129
     saved['inflight'] = [1]
     state.write_text(json.dumps(saved))
     assert module.Bridge().refused
@@ -48,7 +52,6 @@ with tempfile.TemporaryDirectory() as directory:
     (Path(directory)/'proxy-summary.json').unlink()
     bridge = module.Bridge()
     bridge.counts['forwarded'] = 1
-    bridge.budget = 128
     bridge.last_forward_at = 1
     bridge.inflight.add(1)
     flow = types.SimpleNamespace(metadata={'ticket':'synthetic','capture_index':1},

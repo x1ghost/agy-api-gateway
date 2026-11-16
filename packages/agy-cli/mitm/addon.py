@@ -8,7 +8,6 @@ from mitmproxy import http
 STATE=Path(os.environ['AGY_MITM_STATE_DIR'])
 FIXTURES=Path(os.environ['AGY_MITM_FIXTURE_DIR']) if os.environ.get('AGY_MITM_FIXTURE_DIR') else None
 ALLOW=os.environ.get('AGY_MITM_ALLOW_MODEL_FORWARD')=='1'
-MAX_FORWARDS=max(0,int(os.environ.get('AGY_MITM_MAX_FORWARDS','0')))
 MIN_INTERVAL=max(0,float(os.environ.get('AGY_MITM_MIN_INTERVAL_SECONDS','0')))
 CAPTURE=Path(os.environ['AGY_MITM_CAPTURE_DIR']) if os.environ.get('AGY_MITM_CAPTURE_DIR') else None
 HOST='daily-cloudcode-pa.googleapis.com'
@@ -33,7 +32,7 @@ async def send(endpoint,data):return await asyncio.to_thread(control,endpoint,da
 class Bridge:
  def __init__(self):
   self.counts={'forwarded':0,'fixtures':0,'blockedGenerations':0,'controlErrors':0,'upstream429':0,'statuses':[],'cancelledTickets':0}
-  self.serial=0;self.refused=False;self.last_forward=0;self.last_forward_at=0;self.inflight=set();self.budget=None;self.acknowledged_status_count=0;self.forward_lock=asyncio.Lock()
+  self.serial=0;self.refused=False;self.last_forward=0;self.last_forward_at=0;self.inflight=set();self.acknowledged_status_count=0;self.forward_lock=asyncio.Lock()
   state_file=STATE/'proxy-state.json'
   if state_file.exists():
    try:
@@ -42,13 +41,12 @@ class Bridge:
     if any(type(counts[k]) is not int or counts[k]<0 for k in counts if k!='statuses'):raise ValueError('Invalid counters')
     if not isinstance(counts['statuses'],list) or len(counts['statuses'])>counts['forwarded'] or any(type(x) is not int or not 100<=x<=599 for x in counts['statuses']):raise ValueError('Invalid statuses')
     if type(saved['serial']) is not int or saved['serial']<0 or type(saved['refused']) is not bool:raise ValueError('Invalid gate state')
-    pending=saved['inflight'];stamp=saved['lastForwardAt'];budget=saved['budget'];ack=saved.get('acknowledgedStatusCount',0)
+    pending=saved['inflight'];stamp=saved['lastForwardAt'];ack=saved.get('acknowledgedStatusCount',0)
     if type(ack) is not int or not 0<=ack<=len(counts['statuses']):raise ValueError('Invalid acknowledged status count')
     if not isinstance(pending,list) or any(type(x) is not int or not 1<=x<=counts['forwarded'] for x in pending) or len(set(pending))!=len(pending):raise ValueError('Invalid reservations')
     if type(stamp) not in [int,float] or not math.isfinite(stamp) or stamp<0:raise ValueError('Invalid rate timestamp')
-    if budget is not None and (type(budget) is not int or budget<1 or counts['forwarded']>budget):raise ValueError('Invalid budget')
-    if counts['forwarded'] and (budget is None or not stamp):raise ValueError('Missing forward reservation')
-    self.counts=counts;self.serial=saved['serial'];self.budget=budget;self.inflight=set(pending);self.last_forward_at=stamp;self.acknowledged_status_count=ack
+    if counts['forwarded'] and not stamp:raise ValueError('Missing forward reservation')
+    self.counts=counts;self.serial=saved['serial'];self.inflight=set(pending);self.last_forward_at=stamp;self.acknowledged_status_count=ack
     # v1 conflated upstream 429 with uncertain failures. Clear only a fully
     # accounted 429-only stop; preserve all ambiguous or other failure states.
     legacy_429_only=(saved['version']==1 and saved['refused'] and counts['upstream429']>0
@@ -82,7 +80,7 @@ class Bridge:
   finally:tmp.unlink(missing_ok=True)
  def report(self):
   try:
-   self.atomic('proxy-state.json',{'version':2,'counts':self.counts,'serial':self.serial,'refused':self.refused,'inflight':sorted(self.inflight),'budget':self.budget,'lastForwardAt':self.last_forward_at,'acknowledgedStatusCount':self.acknowledged_status_count})
+   self.atomic('proxy-state.json',{'version':2,'counts':self.counts,'serial':self.serial,'refused':self.refused,'inflight':sorted(self.inflight),'lastForwardAt':self.last_forward_at,'acknowledgedStatusCount':self.acknowledged_status_count})
    self.atomic('proxy-summary.json',self.counts)
   except Exception:
    self.refused=True
@@ -129,14 +127,12 @@ class Bridge:
    elif not ALLOW:raise ValueError('Model forwarding disabled')
    else:
     async with self.forward_lock:
-     if self.budget is None and MAX_FORWARDS>0:self.budget=MAX_FORWARDS
-     limit=min(MAX_FORWARDS,self.budget or 0)
-     if self.refused or self.counts['forwarded']>=limit:raise ValueError('Live request budget/refusal gate')
+     if self.refused:raise ValueError('Live refusal gate')
      if MIN_INTERVAL and self.last_forward:
       await asyncio.sleep(max(0,MIN_INTERVAL-(time.monotonic()-self.last_forward)))
-     if self.refused or self.counts['forwarded']>=limit:raise ValueError('Request budget or previous refusal')
+     if self.refused:raise ValueError('Previous refusal')
      await self.active(ticket) # Recheck after the rate-limit wait, immediately before forwarding.
-     if self.refused or self.counts['forwarded']>=limit:raise ValueError('Gate changed while checking ticket')
+     if self.refused:raise ValueError('Gate changed while checking ticket')
      self.counts['forwarded']+=1;self.last_forward=time.monotonic();self.last_forward_at=time.time();self.inflight.add(self.counts['forwarded'])
      flow.metadata['capture_index']=self.counts['forwarded']
      flow.metadata['forwarded_at']=time.monotonic()
