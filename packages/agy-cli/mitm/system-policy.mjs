@@ -33,12 +33,24 @@ export const KNOWN_REFUSED_SYSTEM_HASHES = new Set([
   '10591efdcea75a1645b7f19037b36c979849ad4ec27f11ce87a8393423597b44',
 ])
 export const systemFingerprint = text => createHash('sha256').update(text.trim().replace(/\s+/g,' ')).digest('hex')
+// CC may append an unrelated line to the same paragraph. Match only a full
+// paragraph or a complete leading line sequence, retaining the following text.
+function securityPrefixLength(paragraph, hashes) {
+  if (hashes.has(systemFingerprint(paragraph))) return paragraph.length
+  for (const match of paragraph.matchAll(/\r?\n/g)) {
+    if (hashes.has(systemFingerprint(paragraph.slice(0, match.index)))) return match.index
+  }
+  return 0
+}
 export function replaceKnownSecurity(text, hashes=KNOWN_REFUSED_SYSTEM_HASHES) {
-  return text.split(/(\r?\n\s*\r?\n)/).map(p => hashes.has(systemFingerprint(p)) ? AGY_NATIVE_SECURITY : p).join('')
+  return text.split(/(\r?\n\s*\r?\n)/).map(p => {
+    const length=securityPrefixLength(p,hashes)
+    return length ? AGY_NATIVE_SECURITY+p.slice(length) : p
+  }).join('')
 }
 export function assertForwardableSystem(projected, hashes=KNOWN_REFUSED_SYSTEM_HASHES) {
   for(const part of projected.systemInstruction?.parts||[])for(const paragraph of part.text.split(/\r?\n\s*\r?\n/)) {
-    if(hashes.has(systemFingerprint(paragraph)))throw Object.assign(new Error(
+    if(securityPrefixLength(paragraph,hashes))throw Object.assign(new Error(
       'CC system instructions contain a paragraph previously refused by official AGY. Instructions were preserved; no model request was sent. This full-system combination is not yet supported by the bridge.'
     ),{status:422,code:'known_refused_system'})
   }
