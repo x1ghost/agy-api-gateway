@@ -95,6 +95,9 @@ with tempfile.TemporaryDirectory() as directory:
             assert not module.AccountBridge(config).bridge().refused
             (Path(isolated)/'selected-account.json').write_text(json.dumps({'id':'a'}))
             assert module.AccountBridge(config).bridge().refused
+            config.write_text(json.dumps({'accounts':[{'id':'a','home':str(home_a)},{'id':'b','home':str(home_b)},{'id':'c','home':str(Path(isolated)/'home-c')}]}))
+            (Path(isolated)/'selected-account.json').write_text(json.dumps({'id':'c'}))
+            assert not pool.bridge().refused
         finally:
             module.STATE = original_state
             if original_home is None: os.environ.pop('HOME',None)

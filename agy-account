@@ -1,11 +1,35 @@
 #!/usr/bin/env node
-// Operator command: all account changes remain explicit.
+// Operator command. Refresh tokens are read privately from stdin, never argv.
+import fs from 'node:fs'
 const [action,id,...extra]=process.argv.slice(2)
-if(extra.length||!['list','select'].includes(action)||action==='list'&&id||action==='select'&&!id){process.stderr.write('Usage: agy-account list | agy-account select ACCOUNT_ID\n');process.exit(2)}
+const tokenFile=action==='add'&&extra.length===2&&extra[0]==='--token-file'?extra[1]:undefined
+if((extra.length&&!tokenFile)||!['list','select','add'].includes(action)||action==='list'&&id||action!=='list'&&!id){process.stderr.write('Usage: agy-account list | agy-account select ACCOUNT_ID | agy-account add ACCOUNT_ID [--token-file PATH]\n');process.exit(2)}
 const token=process.env.AGY_CC_TOKEN,port=Number(process.env.AGY_CC_PORT||3437)
 if(!token||!Number.isInteger(port)||port<1||port>65535){process.stderr.write('Set AGY_CC_TOKEN and a valid AGY_CC_PORT\n');process.exit(2)}
+async function refreshToken(){
+  if(tokenFile){
+    let fd
+    try {
+      fd=fs.openSync(tokenFile,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW)
+      const stat=fs.fstatSync(fd)
+      if(!stat.isFile()||stat.uid!==process.getuid()||stat.mode&0o077||stat.size>8194)throw Error('Invalid token file')
+      return fs.readFileSync(fd,'utf8').trim()
+    } catch {throw Error('Token file must be a private regular file owned by the current user')}
+    finally {if(fd!==undefined)fs.closeSync(fd)}
+  }
+  if(!process.stdin.isTTY){let text='';for await(const chunk of process.stdin){text+=chunk;if(text.length>8194)throw Error('Refresh token is too long')}return text.trim()}
+  process.stderr.write('Refresh token (hidden): ')
+  return await new Promise((resolve,reject)=>{
+    let value='';process.stdin.setRawMode(true);process.stdin.resume();process.stdin.setEncoding('utf8')
+    const finish=(err)=>{process.stdin.setRawMode(false);process.stdin.pause();process.stdin.removeListener('data',onData);process.stderr.write('\n');err?reject(err):resolve(value.trim())}
+    const onData=chunk=>{for(const c of chunk){if(c==='\u0003')return finish(Error('Cancelled'));if(c==='\r'||c==='\n')return finish();if(c==='\u007f'||c==='\b')value=value.slice(0,-1);else value+=c;if(value.length>8192)return finish(Error('Refresh token is too long'))}}
+    process.stdin.on('data',onData)
+  })
+}
 try {
-  const response=await fetch(`http://127.0.0.1:${port}/gateway/accounts${action==='select'?'/select':''}`,{method:action==='select'?'POST':'GET',headers:{'x-api-key':token,...(id?{'content-type':'application/json'}:{})},...(id?{body:JSON.stringify({id})}:{})})
+  const refresh=action==='add'?await refreshToken():undefined
+  const data=action==='select'?{id}:action==='add'?{id,refresh_token:refresh}:undefined
+  const response=await fetch(`http://127.0.0.1:${port}/gateway/accounts${action==='select'?'/select':''}`,{method:action==='list'?'GET':'POST',headers:{'x-api-key':token,...(data?{'content-type':'application/json'}:{})},...(data?{body:JSON.stringify(data)}:{})})
   const body=await response.text()
   if(!response.ok){process.stderr.write(body+'\n');process.exitCode=1}else process.stdout.write(body+'\n')
-} catch {process.stderr.write('Account control unavailable\n');process.exitCode=1}
+} catch(error) {process.stderr.write((['Cancelled','Refresh token is too long','Token file must be a private regular file owned by the current user'].includes(error.message)?error.message:'Account control unavailable')+'\n');process.exitCode=1}

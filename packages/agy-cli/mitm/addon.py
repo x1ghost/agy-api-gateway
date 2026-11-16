@@ -251,13 +251,8 @@ class Bridge:
 class AccountBridge:
  # Per-account durable forwarding state; control and proxy remain shared.
  def __init__(self,config_path):
-  config=json.loads(Path(config_path).read_text())
-  self.accounts={}
-  for account in config.get('accounts',[]):
-   name=account.get('id');home=account.get('home')
-   if not isinstance(name,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}',name) or name in self.accounts or not isinstance(home,str) or not os.path.isabs(home):raise RuntimeError('Invalid account config')
-   self.accounts[name]=home
-  if not self.accounts:raise RuntimeError('At least one account is required')
+  self.config_path=Path(config_path);self.accounts={}
+  self.load_accounts()
   self.root=STATE/'account-proxy';self.bridges={}
   # Preserve the existing single-account gate when account mode is enabled.
   if (STATE/'proxy-state.json').exists() and not self.root.exists():
@@ -273,9 +268,19 @@ class AccountBridge:
    finally:
     if temp.exists():shutil.rmtree(temp)
   self.default=next(iter(self.accounts))
+ def load_accounts(self):
+  config=json.loads(self.config_path.read_text())
+  accounts={}
+  for account in config.get('accounts',[]):
+   name=account.get('id');home=account.get('home')
+   if not isinstance(name,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}',name) or name in accounts or not isinstance(home,str) or not os.path.isabs(home):raise RuntimeError('Invalid account config')
+   accounts[name]=home
+  if not accounts:raise RuntimeError('At least one account is required')
+  self.accounts=accounts
  def selected(self):
   try:name=json.loads((STATE/'selected-account.json').read_text())['id']
   except FileNotFoundError:name=self.default
+  if name not in self.accounts:self.load_accounts()
   if name not in self.accounts:raise RuntimeError('Selected account is not configured')
   return name
  def bridge(self):

@@ -9,7 +9,8 @@ export class Accounts {
     if(!path.isAbsolute(configPath))throw Error('AGY_ACCOUNTS_CONFIG must be an absolute path')
     const stat=fs.lstatSync(configPath)
     if(!stat.isFile()||stat.isSymbolicLink()||stat.uid!==process.getuid()||stat.mode&0o077)throw Error('Account config must be a private regular file owned by this user')
-    const config=JSON.parse(fs.readFileSync(configPath,'utf8'))
+    this.configPath=configPath;this.state=state;this.adding=false
+    const config=JSON.parse(fs.readFileSync(configPath,'utf8'));this.config=config
     if(!Array.isArray(config.accounts)||!config.accounts.length)throw Error('At least one account is required')
     this.accounts=new Map();const homes=new Set()
     for(const account of config.accounts) {
@@ -36,9 +37,40 @@ export class Accounts {
     this.id=id
     return this.list()
   }
-  env(base){
-    const env={...base,HOME:this.current().home}
+  async add(id,refreshToken,validate) {
+    if(!validId(id)||typeof refreshToken!=='string'||!refreshToken.trim()||refreshToken.length>8192||/[\r\n\0]/.test(refreshToken))throw Object.assign(Error('Invalid account ID or refresh token'),{status:400})
+    if(this.accounts.has(id))throw Object.assign(Error('Account already exists'),{status:409})
+    if(this.adding)throw Object.assign(Error('An account is already being added'),{status:409})
+    this.adding=true
+    const root=path.join(this.state,'account-homes'),home=path.join(root,id)
+    let created=false,temp
+    try {
+      fs.mkdirSync(root,{mode:0o700,recursive:true})
+      const rootStat=fs.lstatSync(root)
+      if(!rootStat.isDirectory()||rootStat.isSymbolicLink()||rootStat.uid!==process.getuid()||rootStat.mode&0o077)throw Error('Account homes directory must be private')
+      try {fs.mkdirSync(home,{mode:0o700});created=true}
+      catch(error){if(error.code==='EEXIST')throw Object.assign(Error('Account HOME already exists'),{status:409});throw error}
+      const credentialDir=path.join(home,'.gemini','antigravity-cli');fs.mkdirSync(credentialDir,{mode:0o700,recursive:true})
+      const credential={token:{access_token:'',token_type:'Bearer',refresh_token:refreshToken,expiry:'1970-01-01T00:00:00Z',expires_in:0},auth_method:'consumer',id_token_email:''}
+      fs.writeFileSync(path.join(credentialDir,'antigravity-oauth-token'),JSON.stringify(credential),{mode:0o600,flag:'wx'})
+      await validate({id,home})
+      const config={...this.config,accounts:[...this.config.accounts,{id,home}]}
+      temp=this.configPath+'.'+randomUUID()+'.tmp'
+      fs.writeFileSync(temp,JSON.stringify(config),{mode:0o600,flag:'wx'});fs.renameSync(temp,this.configPath);temp=null
+      this.config=config;this.accounts.set(id,{id,home});created=false
+      return this.list()
+    } finally {
+      if(temp)fs.rmSync(temp,{force:true})
+      if(created)fs.rmSync(home,{recursive:true,force:true})
+      this.adding=false
+    }
+  }
+  envFor(base,account){
+    const env={...base,HOME:account.home}
     for(const key of ['XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','XDG_STATE_HOME'])delete env[key]
     return env
+  }
+  env(base){
+    return this.envFor(base,this.current())
   }
 }
