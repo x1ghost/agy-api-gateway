@@ -28,6 +28,15 @@ export function rewriteSystemIdentity(text) {
   }).join('')
 }
 
+// Preserve paths, URLs and filenames in tool descriptions: they may be
+// executable instructions, unlike product names in ordinary prose.
+export function rewriteToolDescription(text) {
+  return text.split(/(\s+)/).map(token=>{
+    if (/[\\/]/.test(token) || /(?:^|[(`'"\[])\.(?:claude|anthropic)\b/i.test(token) || /\b(?:claude|anthropic)\.[a-z0-9]{2,}\b/i.test(token)) return token
+    return token.replace(/\b(?:claude|anthropic)\b/gi,'Antigravity')
+  }).join('')
+}
+
 // CC describes its own products, model catalog and fast mode in environment
 // bullets. Remove only matching complete bullets; keep adjacent instructions.
 export function removeClientProductNotes(text) {
