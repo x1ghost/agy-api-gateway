@@ -18,11 +18,14 @@ test('default safety substitution reaches the model while user and tool text rem
     const request = { model:'fixture', system:`Before\n\n${paragraph}\n\nAfter`, messages:[{role:'user',content:paragraph}], tools:[{name:'Read',description:paragraph,input_schema:{type:'object'}}] }
     const projected = projectCc(request, new WireStore())
     assert.equal(projected.systemInstruction.parts[0].text, `Before\n\n${AGY_NATIVE_SECURITY}\n\nAfter`)
+    const appended = projectCc({ ...request, system:`${paragraph}\nKeep this adjacent instruction.` }, new WireStore())
+    assert.equal(appended.systemInstruction.parts[0].text, `${AGY_NATIVE_SECURITY}\nKeep this adjacent instruction.`)
     assert.equal(projected.contents[0].parts[0].text, paragraph)
     assert.equal(projected.tools[0].functionDeclarations[0].description, paragraph)
     assert.doesNotThrow(() => assertForwardableSystem(projected))
     process.env.AGY_CC_NATIVE_SECURITY_SWAP = '0'
     assert.throws(() => assertForwardableSystem(projectCc(request, new WireStore())), error => error.status === 422)
+    assert.throws(() => assertForwardableSystem(projectCc({ ...request, system:`${paragraph}\nKeep this adjacent instruction.` }, new WireStore())), error => error.status === 422)
   } finally {
     KNOWN_REFUSED_SYSTEM_HASHES.delete(hash)
     if (previous === undefined) delete process.env.AGY_CC_NATIVE_SECURITY_SWAP
