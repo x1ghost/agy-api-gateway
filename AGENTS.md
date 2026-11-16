@@ -29,6 +29,10 @@ This is **not a complete Anthropic API implementation**. Text, streaming, client
 
 The portable launcher has passed a real AGY 1.5.9 tool-call and tool-result round trip in one deployment, alongside offline tests. Other environments and the full API surface remain unverified. The supported CLI version and provider behavior may change. Contributions to compatibility and portable deployment are welcome.
 
+## Investigation priorities
+
+Treat upstream HTTP 429 (rate limits/quota) and 403 (access/refusal) as the highest-priority operational issues. Use gateway diagnostics and official AGY CLI behavior to identify the upstream cause, affected models, and whether other requests are impacted. Issue #5 (small output limits versus thinking budgets) is lower priority.
+
 ## Run
 
 Prerequisites: Unix-like environment, Node.js 22+, Python 3.10+, `mitmdump` (mitmproxy 12.x), an installed official `agy` CLI, and an existing AGY login for the same OS user. The gateway does not manage accounts or sign in for you.
