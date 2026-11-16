@@ -38,7 +38,7 @@ class Bridge:
   if state_file.exists():
    try:
     saved=json.loads(state_file.read_text());counts=saved['counts']
-    if saved['version']!=1 or set(counts)!=set(self.counts):raise ValueError('Invalid state schema')
+    if saved['version'] not in (1,2) or set(counts)!=set(self.counts):raise ValueError('Invalid state schema')
     if any(type(counts[k]) is not int or counts[k]<0 for k in counts if k!='statuses'):raise ValueError('Invalid counters')
     if not isinstance(counts['statuses'],list) or len(counts['statuses'])>counts['forwarded'] or any(type(x) is not int or not 100<=x<=599 for x in counts['statuses']):raise ValueError('Invalid statuses')
     if type(saved['serial']) is not int or saved['serial']<0 or type(saved['refused']) is not bool:raise ValueError('Invalid gate state')
@@ -48,7 +48,13 @@ class Bridge:
     if budget is not None and (type(budget) is not int or budget<1 or counts['forwarded']>budget):raise ValueError('Invalid budget')
     if counts['forwarded'] and (budget is None or not stamp):raise ValueError('Missing forward reservation')
     self.counts=counts;self.serial=saved['serial'];self.budget=budget;self.inflight=set(pending);self.last_forward_at=stamp
-    self.refused=saved['refused'] or bool(pending) or bool(counts['upstream429'] or counts['controlErrors']) or any(x>=400 for x in counts['statuses'])
+    # v1 conflated upstream 429 with uncertain failures. Clear only a fully
+    # accounted 429-only stop; preserve all ambiguous or other failure states.
+    legacy_429_only=(saved['version']==1 and saved['refused'] and counts['upstream429']>0
+                     and counts['controlErrors']==0 and not pending
+                     and len(counts['statuses'])==counts['forwarded']
+                     and all(x<400 or x==429 for x in counts['statuses']))
+    self.refused=(saved['refused'] and not legacy_429_only) or bool(pending) or bool(counts['controlErrors']) or any(x>=400 and x!=429 for x in counts['statuses'])
     if stamp:self.last_forward=time.monotonic()-max(0,time.time()-stamp)
    except Exception as e:raise RuntimeError('Invalid durable proxy state; use an explicitly new experiment scope, never reset silently') from e
   elif (STATE/'proxy-summary.json').exists():
@@ -75,7 +81,7 @@ class Bridge:
   finally:tmp.unlink(missing_ok=True)
  def report(self):
   try:
-   self.atomic('proxy-state.json',{'version':1,'counts':self.counts,'serial':self.serial,'refused':self.refused,'inflight':sorted(self.inflight),'budget':self.budget,'lastForwardAt':self.last_forward_at})
+   self.atomic('proxy-state.json',{'version':2,'counts':self.counts,'serial':self.serial,'refused':self.refused,'inflight':sorted(self.inflight),'budget':self.budget,'lastForwardAt':self.last_forward_at})
    self.atomic('proxy-summary.json',self.counts)
   except Exception:
    self.refused=True
@@ -156,14 +162,14 @@ class Bridge:
     except Exception:pass
  def responseheaders(self,flow):
   if not flow.metadata.get('ticket') or flow.metadata.get('fixture') or flow.metadata.get('blocked'):return
-  ticket=flow.metadata['ticket'];status=flow.response.status_code;original_encoding=flow.response.headers.get('content-encoding','');original_type=flow.response.headers.get('content-type','')
+  ticket=flow.metadata['ticket'];status=flow.response.status_code;original_encoding=flow.response.headers.get('content-encoding','');original_type=flow.response.headers.get('content-type','');retry_after=flow.response.headers.get('retry-after','')
   # Install the ACK-only filter before fallible persistence/capture operations.
   flow.response.status_code=200
   for h in ['content-length','content-encoding','transfer-encoding']:flow.response.headers.pop(h,None)
   flow.response.headers['content-type']='text/event-stream'
   flow.response.stream=lambda chunk:b'' if chunk else ack()
   self.counts['statuses'].append(status)
-  if status>=400:self.refused=True
+  if status>=400 and status!=429:self.refused=True
   if status==429:self.counts['upstream429']+=1
   try:
    self.report()
@@ -180,9 +186,17 @@ class Bridge:
   q=asyncio.Queue();flow.metadata['queue']=q;flow.metadata['size']=0
   async def worker():
    try:
-    await send('/event',{'ticket':ticket,'kind':'headers','status':status})
     if status!=200:
+     error_body=bytearray()
+     while True:
+      chunk=await q.get()
+      if chunk is None:break
+      if isinstance(chunk,Exception):raise chunk
+      if len(error_body)<16384:error_body.extend(chunk[:16384-len(error_body)])
+     await send('/event',{'ticket':ticket,'kind':'headers','status':status,
+                          'error_body':base64.b64encode(error_body).decode(),'retry_after':retry_after[:128]})
      flow.metadata['control_complete']=True;self.settled(flow);return
+    await send('/event',{'ticket':ticket,'kind':'headers','status':status})
     while True:
      chunk=await q.get()
      if chunk is None:break
@@ -212,7 +226,7 @@ class Bridge:
      if flow.metadata['size']>32*1024*1024:raise ValueError('Response exceeds limit')
      if CAPTURE and flow.metadata.get('capture_index') and flow.metadata['size']<=4*1024*1024:
       with open(CAPTURE/f"model-{flow.metadata['capture_index']:02d}-response.bin",'ab') as capture:capture.write(chunk)
-     if status==200:q.put_nowait(bytes(chunk))
+     q.put_nowait(bytes(chunk))
     except Exception:
      self.refused=True;flow.metadata['stream_failed']=True;q.put_nowait(RuntimeError('Response interception failed'))
     return b''

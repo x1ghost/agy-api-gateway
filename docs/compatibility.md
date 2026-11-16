@@ -1,6 +1,6 @@
 # Compatibility and operational boundaries
 
-The public surface currently implements `POST /v1/messages`, health, and a bridge-specific cancellation endpoint. Token counting returns an explicit error on this transport. It is not a drop-in implementation of the entire Anthropic API.
+The public surface currently implements `POST /v1/messages`, `GET /v1/models`, health, and a bridge-specific cancellation endpoint. Token counting returns an explicit error on this transport. It is not a drop-in implementation of the entire Anthropic API.
 
 Messages support text, streamed or buffered output, client-provided tool schemas, parallel tool calls and results, inline base64 PNG/JPEG/WebP, and adaptive thinking with private signature references. The server stores the provider's original signatures privately to restore tool and thinking history; edited or missing records fail instead of fabricating signatures. One carrier runs requests serially. Retries with the same idempotency key replay the recorded response; requests without a key receive independent scopes.
 
@@ -8,4 +8,8 @@ URL images, documents, assistant prefill, numeric thinking budgets, structured o
 
 System instructions are transformed: case-insensitive occurrences of `Claude` and `Anthropic` become `Antigravity`; specific known SDK identity and billing lines receive dedicated substitutions. A known previously refused safety paragraph is replaced by the AGY native safety instruction by default. Set `AGY_CC_NATIVE_SECURITY_SWAP=0` to preserve that paragraph and retain the local refusal preflight. User messages, tool schemas and tool results are not filtered by this policy.
 
-The proxy permits only a fixed set of CLI bootstrap destinations and the observed model route. Upstream protocol changes can break the gateway. It is deliberately fail-closed on errors or ambiguous interrupted forwarding. Private state contains model responses and tool data; do not publish it.
+The proxy permits only a fixed set of CLI bootstrap destinations and the observed model route. Upstream protocol changes can break the gateway. It is deliberately fail-closed on non-429 upstream errors or ambiguous interrupted forwarding; an upstream 429 is returned to its caller without blocking later requests. Private state contains model responses and tool data; do not publish it.
+
+Model discovery runs the signed-in official CLI's `agy models` with a five-minute in-memory cache; it does not make an inference request or verify quota. The list includes the original AGY IDs and `claude-agy/` aliases for IDs without Claude or Anthropic in their name, so Claude Code's discovery picker can display them. The gateway maps those aliases back to the original ID before routing. `created_at` is a required placeholder because the CLI does not report release dates. Enable Claude Code discovery with `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` and set `CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS=65000` for a cold CLI startup. Switching models in a conversation with signed tool or thinking history may fail when the new model cannot use those signatures; start a new session in that case.
+
+For non-200 upstream responses, the gateway relays a bounded JSON error object and `Retry-After` when supplied. Non-JSON, compressed, or oversized/truncated error bodies may only yield the HTTP status. Error responses may be retained in the private response journal. The gateway sets `x-should-retry: false` and does not retry a refused request.

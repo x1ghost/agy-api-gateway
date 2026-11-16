@@ -25,7 +25,7 @@ This project incorporates code from an independently developed AGY-to-Anthropic 
 
 ## Status
 
-This is **not a complete Anthropic API implementation**. Text, streaming, client tool calls, base64 PNG/JPEG/WebP and adaptive thinking are implemented with limitations. Batches, files, models listing, exact token counting, server-side tools, PDFs, URL images, structured output, stop sequences and several other options are not implemented. Some fields and model behaviors are not equivalent. Unsupported requests must not be assumed to work. See [compatibility](docs/compatibility.md).
+This is **not a complete Anthropic API implementation**. Text, streaming, client tool calls, base64 PNG/JPEG/WebP and adaptive thinking are implemented with limitations. Batches, files, exact token counting, server-side tools, PDFs, URL images, structured output, stop sequences and several other options are not implemented. Some fields and model behaviors are not equivalent. Unsupported requests must not be assumed to work. See [compatibility](docs/compatibility.md).
 
 The portable launcher has passed a real AGY 1.5.9 tool-call and tool-result round trip in one deployment, alongside offline tests. Other environments and the full API surface remain unverified. The supported CLI version and provider behavior may change. Contributions to compatibility and portable deployment are welcome.
 
@@ -46,7 +46,7 @@ The service listens on `127.0.0.1:3437`. Pass the token as `x-api-key` or `Autho
 
 Only the gateway and its child CLI trust the proxy's private CA; the system trust store is not modified. The gateway intentionally intercepts and translates the CLI's model traffic. Do not expose its loopback listener directly to the internet; remote access needs an authenticated, encrypted transport managed by the operator.
 
-The forwarding gate defaults to 128 requests, retains counters and stops on an upstream error or uncertain failure. Set `AGY_MITM_MAX_FORWARDS` before first start to select a positive budget. Restarting does not reset a budget or refusal. No automatic account switching is performed. Consult [compatibility](docs/compatibility.md) for system-instruction transformations and refusal protection.
+The forwarding gate defaults to 128 requests, retains counters and stops on non-429 upstream errors or uncertain failure. Set `AGY_MITM_MAX_FORWARDS` before first start to select a positive budget. An upstream 429 is returned to its caller without stopping other requests. Restarting does not reset a budget or other refusal. No automatic account switching is performed. Consult [compatibility](docs/compatibility.md) for system-instruction transformations and refusal protection.
 
 The known CC safety paragraph is replaced with the native AGY safety instruction by default; set `AGY_CC_NATIVE_SECURITY_SWAP=0` to disable that substitution.
 
