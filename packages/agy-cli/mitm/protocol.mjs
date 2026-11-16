@@ -141,6 +141,25 @@ function thinkingDisplay(body) {
   if(Object.keys(value).some(k=>!['type','display'].includes(k))||value.display!==undefined&&!['omitted','summarized','updates'].includes(value.display))throw fail('Unsupported adaptive thinking configuration')
   return value.display||'omitted'
 }
+// Streamed Claude thinking arrives as text fragments followed by a separate
+// signature fragment. Reassemble the original signed block for history replay.
+function replayParts(model, wire) {
+  const clean=wire.filter(part=>!(part.text===''&&Object.keys(part).length===1))
+  if(!/claude/i.test(model))return clean
+  const result=[]
+  for(let i=0;i<clean.length;) {
+    if(clean[i].thought!==true) {result.push(clean[i++]);continue}
+    const group=[]
+    while(i<clean.length&&clean[i].thought===true)group.push(clean[i++])
+    if(group.some(p=>Object.keys(p).some(k=>!['thought','text','thoughtSignature'].includes(k))||typeof p.text!=='string'))throw fail('Unsupported Claude thinking history',409)
+    const signed=group.filter(p=>p.thoughtSignature)
+    if(signed.length!==1||signed[0]!==group.at(-1))throw fail('Claude thinking history is missing its final signature',409)
+    const text=group.map(p=>p.text).join('')
+    if(!text)throw fail('Claude thinking history has no replayable text',409)
+    result.push({thought:true,text,thoughtSignature:signed[0].thoughtSignature})
+  }
+  return result
+}
 export function projectCc(body, store) {
   if(!object(body)||typeof body.model!=='string'||!Array.isArray(body.messages)||!body.messages.length)throw fail('model and messages required')
   const display=thinkingDisplay(body)
@@ -172,7 +191,10 @@ export function projectCc(body, store) {
       }
       const wire=store.get(body.model,messages.slice(0,i),bs)
       if((pending.length||bs.some(b=>b.type==='thinking')) && !wire)throw fail('Tool/thinking history has no matching wire metadata; do not regenerate or invent signatures',409)
-      contents.push({role:'model',parts:wire||textParts(bs)})
+      // AGY can stream empty untyped text fragments. Claude rejects an empty
+      // historical text block; discard only inert fragments, never signatures.
+      const parts=wire ? replayParts(body.model,wire) : textParts(bs)
+      contents.push({role:'model',parts})
     } else {
       const results=bs.filter(b=>b.type==='tool_result'), other=bs.filter(b=>b.type!=='tool_result')
       if(results.length!==pending.length || new Set(results.map(r=>r.tool_use_id)).size!==results.length || results.some(r=>!pending.some(c=>c.id===r.tool_use_id)))throw fail('Incomplete, duplicate or orphan tool_result')

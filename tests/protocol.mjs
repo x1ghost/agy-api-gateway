@@ -44,8 +44,11 @@ test('HTTP tool roundtrip retains signed upstream call and does not repeat it on
   broker=new MitmBroker({token:'control',storeDir:path.join(root,'wire'),drive:async job=>{
     forwards++
     const {payload}=await ctl('/claim',{ticket:job.ticket,envelope:{model:'fixture',request:{contents:[{role:'user',parts:[{text:job.marker}]}]}}})
-    const parts=forwards===1 ? [{thoughtSignature:'signed',functionCall:{id:'call-1',name:'Read',args:{path:'proof.txt'}}}] : [{text:'done'}]
-    if(forwards===2)assert.equal(payload.request.contents.at(-1).parts[0].functionResponse.response.output,'proof')
+    const parts=forwards===1 ? [{text:''},{thoughtSignature:'signed',functionCall:{id:'call-1',name:'Read',args:{path:'proof.txt'}}},{text:''}] : [{text:'done'}]
+    if(forwards===2) {
+      assert.equal(payload.request.contents.at(-1).parts[0].functionResponse.response.output,'proof')
+      assert.deepEqual(payload.request.contents.at(-2).parts,[{thoughtSignature:'signed',functionCall:{id:'call-1',name:'Read',args:{path:'proof.txt'}}}])
+    }
     await ctl('/event',{ticket:job.ticket,kind:'headers',status:200})
     const frame={response:{candidates:[{content:{role:'model',parts},finishReason:'STOP'}],usageMetadata:{promptTokenCount:100,cachedContentTokenCount:25,candidatesTokenCount:4}}}
     await ctl('/event',{ticket:job.ticket,kind:'chunk',data:Buffer.from('data: '+JSON.stringify(frame)+'\n\n').toString('base64')})
@@ -96,4 +99,15 @@ test('upstream 429 details and retry-after reach the client without a retry', as
   assert.equal(diagnostics.length,1); assert.equal(diagnostics[0].status,429); assert.equal(diagnostics[0].model,'fixture')
   assert.match(diagnostics[0].system_sha256,/^[a-f0-9]{64}$/)
   assert.doesNotMatch(JSON.stringify(diagnostics),/Synthetic quota exhausted|hello/)
+})
+
+
+test('Claude streamed thought fragments replay as one signed thinking block', () => {
+  const store=new WireStore(), model='claude-opus-fixture'
+  const user={role:'user',content:'synthetic'}, call={type:'tool_use',id:'toolu_test',name:'Read',input:{path:'x'}}
+  const content=[{type:'thinking',thinking:'',signature:'agyref_fixture'},call]
+  const parts=[{text:''},{thought:true,text:'think '},{thought:true,text:'once'}, {thought:true,text:'',thoughtSignature:'provider-signature'},{functionCall:{name:'Read',args:{path:'x'}}},{text:''}]
+  store.save(model,[user],content,parts)
+  const projected=projectCc({model,messages:[user,{role:'assistant',content},{role:'user',content:[{type:'tool_result',tool_use_id:'toolu_test',content:'done'}]}],tools:[{name:'Read',input_schema:{type:'object'}}]},store)
+  assert.deepEqual(projected.contents[1].parts,[{thought:true,text:'think once',thoughtSignature:'provider-signature'},{functionCall:{name:'Read',args:{path:'x'}}}])
 })
