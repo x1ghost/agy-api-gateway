@@ -3,28 +3,26 @@ import {createHash} from 'node:crypto'
 // Identity-only excerpt observed in official AGY1.5.9's native request. Do not
 // import native tool/sandbox instructions or its USER_REQUEST wrapper claim.
 export const AGY_IDENTITY = 'You are Antigravity, a powerful agentic AI assistant designed by the Google Deepmind team.\nYou are working with a USER to solve their task.'
-export const BRIDGE_CONTEXT = 'The client controls conversation history and tool execution. Official Antigravity CLI handles authentication and model requests.'
 // Exact security instruction from the captured AGY 1.5.9 native system prompt.
 export const AGY_NATIVE_SECURITY = 'Never defeat or bypass an access control, permission check, credential requirement, network/proxy restriction, or sandbox/environment boundary - including writing to the state or processes such a check reads, spoofing identity, intercepting the check, probing undocumented local/host services, or modifying host, harness, or test infrastructure outside your task scope. Use documented, sanctioned paths only; if none of them work, you are blocked - report the error and stop.'
-const SDK_BILLING = /^x-(?:anthropic|antigravity|anti gravity)-billing-header:\s*(?:(?:cc_version|cc_entrypoint|cch)=[^;\r\n]*;\s*)+$/i
-const CLIENT_IDENTITIES = [
-  "You are Claude Code, Anthropic's official CLI for Claude.",
-  "You are anti gravity Code, anti gravity's official CLI for anti gravity.",
-  "You are Antigravity Code, Antigravity's official CLI for Antigravity.",
-  'You are a Claude agent, built on Anthropic\'s Claude Agent SDK.',
-  'You are a anti gravity agent, built on anti gravity\'s anti gravity Agent SDK.',
-  'You are a Antigravity agent, built on Antigravity\'s Antigravity Agent SDK.',
-]
+const SDK_BILLING = /^x\s*[-_]\s*(?:anthropic|antigravity|anti\s+gravity)\s*[-_]\s*billing\s*[-_]\s*header\s*:/i
+function isClientIdentity(line) {
+  if(!/^you(?:\s+are|'re)\s+/i.test(line)) return false
+  const client='(?:claude|antigravity|anti\\s+gravity)'
+  const code=new RegExp(`\\b${client}\\s+code\\b`,'i').test(line) && /\bofficial\b/i.test(line) && /\bcli\b/i.test(line)
+  const agent=new RegExp(`\\b${client}\\s+agent\\b`,'i').test(line) && /\bagent\s+sdk\b/i.test(line)
+  return code || agent
+}
 export function rewriteSystemIdentity(text) {
-  // Match complete known identity lines, preserving all surrounding rules.
+  // Match client identity and billing lines, preserving surrounding rules.
   return text.split(/(\r\n|\n|\r)/).map(line=>{
     const trimmed=line.trim()
-    if(SDK_BILLING.test(trimmed))return line.match(/^\s*/)[0]+BRIDGE_CONTEXT+line.match(/\s*$/)[0]
-    if(CLIENT_IDENTITIES.some(id=>id.toLowerCase()===trimmed.toLowerCase())) {
+    if(SDK_BILLING.test(trimmed))return ''
+    if(isClientIdentity(trimmed)) {
       const indent=line.match(/^\s*/)[0],trailing=line.match(/\s*$/)[0]
       return indent+AGY_IDENTITY+trailing
     }
-    return line.replace(/claude|anthropic/gi,'Antigravity')
+    return line.replace(/claude(?!\.md\b)|anthropic/gi,'Antigravity')
   }).join('')
 }
 
