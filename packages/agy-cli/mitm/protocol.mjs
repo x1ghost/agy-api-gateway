@@ -108,7 +108,8 @@ export class WireStore {
     const calls=value.content.filter(b=>b.type==='tool_use'), wire=value.parts.filter(p=>p?.functionCall)
     if(calls.length!==wire.length||calls.some((c,i)=>c.name!==wire[i].functionCall.name))throw fail('Tool call differs from wire metadata',409)
     // Retain only the blocks CC actually sent, even if the original response
-    // contained more blocks. Reasoning and old signatures do not cross models.
+    // contained more blocks. Old reasoning does not cross models, but the
+    // original function-call part and its signature must remain together.
     return canonical.flatMap(block=>{
       if(block.type==='thinking')return model?structuredClone(value.parts.filter(part=>part.thought===true)):[]
       if(block.type==='text')return [{text:block.text}]
@@ -204,11 +205,11 @@ function replayParts(model, wire) {
   }
   return result
 }
-// Official AGY retains visible history and tool calls on model changes, but
-// omits the old model's reasoning and signatures.
+// Keep the provider's function-call signatures when replaying tool history;
+// remove old reasoning and signatures on other parts when switching models.
 function crossModelParts(wire) {
   return wire.filter(part=>part.thought!==true).map(part=>{
-    const result={...part};delete result.thoughtSignature;return result
+    const result={...part};if(!result.functionCall)delete result.thoughtSignature;return result
   }).filter(part=>Object.keys(part).length&&!(part.text===''&&Object.keys(part).length===1))
 }
 export function projectCc(body, store, {dsh=false}={}) {
