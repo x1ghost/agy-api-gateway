@@ -367,7 +367,12 @@ export class WireTurn {
     const ids=new Set()
     for(const p of calls) {
       const f=p.functionCall
-      if(!this.body.tools?.some(t=>t.name===f.name))throw fail('Upstream called an undeclared tool',502)
+      if(!this.body.tools?.some(t=>t.name===f.name)) {
+        // Include only a valid tool identifier in the caller's error; never
+        // echo arbitrary model output or tool arguments into diagnostics.
+        const name=typeof f.name==='string'&&/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(f.name)?` "${f.name}"`:''
+        throw fail(`Upstream called an undeclared tool${name}`,502)
+      }
       if((f.partialArgs!==undefined && (!Array.isArray(f.partialArgs)||f.partialArgs.length>0)) || f.willContinue)throw fail('Upstream streamed tool arguments are unsupported',502)
       if(!object(f.args))throw fail('Upstream tool call omitted or returned invalid arguments',502)
       if(f.id && ids.has(f.id))throw fail('Duplicate upstream functionCall ID',502)

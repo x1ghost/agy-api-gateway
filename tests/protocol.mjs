@@ -49,6 +49,17 @@ test('recognized DSH source and web guidance is removed from system text only', 
   assert.equal(projected.contents[0].parts[0].text,user)
 })
 
+test('undeclared tool errors identify valid names without echoing arbitrary output', () => {
+  const body={model:'fixture',messages:[{role:'user',content:'hello'}],tools:[{name:'allowed',input_schema:{type:'object'}}]}
+  const invoke=name=>{
+    const t=new WireTurn(body,new WireStore(),()=>{})
+    t.push(Buffer.from('data: '+JSON.stringify({response:{candidates:[{content:{parts:[{functionCall:{name,args:{}}}]},finishReason:'STOP'}]}})+'\n\n'))
+    return ()=>t.finish()
+  }
+  assert.throws(invoke('unknown_tool'),/undeclared tool "unknown_tool"/)
+  assert.throws(invoke('arbitrary output with spaces'),e=>e.message==='Upstream called an undeclared tool')
+})
+
 test('complete tool calls accept empty partialArgs but reject actual partial arguments', () => {
   const body={model:'fixture',messages:[{role:'user',content:'hello'}],tools:[{name:'get_goal',input_schema:{type:'object',properties:{}}}]}
   const turn=partialArgs=>{
