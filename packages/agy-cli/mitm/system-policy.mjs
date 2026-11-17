@@ -6,8 +6,20 @@ export const AGY_IDENTITY = 'You are Antigravity, a powerful agentic AI assistan
 // Exact security instruction from the captured AGY 1.5.9 native system prompt.
 export const AGY_NATIVE_SECURITY = 'Never defeat or bypass an access control, permission check, credential requirement, network/proxy restriction, or sandbox/environment boundary - including writing to the state or processes such a check reads, spoofing identity, intercepting the check, probing undocumented local/host services, or modifying host, harness, or test infrastructure outside your task scope. Use documented, sanctioned paths only; if none of them work, you are blocked - report the error and stop.'
 const SDK_BILLING = /^x\s*[-_]\s*(?:anthropic|antigravity|anti\s+gravity)\s*[-_]\s*billing\s*[-_]\s*header\s*:/i
+const DSH_IDENTITY = /^you are an ai agent powered by deepseek harness\.$/i
+function isSupportedClientIdentity(line) {
+  if (DSH_IDENTITY.test(line)) return true
+  return /^you(?:\s+are|'re)\s+/i.test(line) && /\bclaude\s+code\b/i.test(line) && /\bofficial\b/i.test(line) && /\bcli\b/i.test(line)
+}
+export function assertSupportedClient(body) {
+  const fields=[body?.system,...(Array.isArray(body?.messages)?body.messages.filter(m=>m?.role==='system').map(m=>m.content):[])]
+  const texts=fields.flatMap(field=>typeof field==='string'?[field]:Array.isArray(field)?field.filter(b=>b?.type==='text'&&typeof b.text==='string').map(b=>b.text):[])
+  if(!texts.some(text=>text.split(/\r?\n|\r/).some(line=>isSupportedClientIdentity(line.trim())))) {
+    throw Object.assign(new Error('Unsupported client identity: a recognized Claude Code or DeepSeek Harness system identity is required'),{status:400})
+  }
+}
 function isClientIdentity(line) {
-  if (/^you are an ai agent powered by deepseek harness\.$/i.test(line)) return true
+  if (DSH_IDENTITY.test(line)) return true
   if(!/^you(?:\s+are|'re)\s+/i.test(line)) return false
   const client='(?:claude|antigravity|anti\\s+gravity)'
   const code=new RegExp(`\\b${client}\\s+code\\b`,'i').test(line) && /\bofficial\b/i.test(line) && /\bcli\b/i.test(line)

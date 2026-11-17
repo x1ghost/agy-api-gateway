@@ -2,6 +2,8 @@
 
 The public surface currently implements `POST /v1/messages`, `GET /v1/models`, health, and a bridge-specific cancellation endpoint. Token counting returns an explicit error on this transport. It is not a drop-in implementation of the entire Anthropic API.
 
+Message requests must contain a recognized Claude Code or DeepSeek Harness identity in their system instructions. Other or absent identities return HTTP 400 before forwarding. This is prompt matching, not client authentication: a caller can supply the same text, and an upstream client update may change its identity text.
+
 Messages support text, streamed or buffered output, client-provided tool schemas, parallel tool calls and results, inline base64 PNG/JPEG/WebP, and adaptive thinking with private signature references. The server stores the provider's original signatures privately to restore tool and thinking history; edited or missing records fail instead of fabricating signatures. For Claude models, streamed thinking fragments are reassembled into their original signed block for replay; empty text-only fragments are omitted. One carrier runs requests serially. Retries with the same idempotency key replay the recorded response; requests without a key receive independent scopes.
 
 URL images, documents, assistant prefill, numeric thinking budgets, structured output, nonempty stop sequences and some tool options are rejected. Model and generation parameter semantics differ between providers. Limits, all tools, long outputs, arbitrary failures, and interoperability across every SDK version remain unverified. There is no guarantee of exactly-once client-side tool execution after a client crash.

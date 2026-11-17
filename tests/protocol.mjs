@@ -6,8 +6,20 @@ import path from 'node:path'
 import { once } from 'node:events'
 import { MitmBroker } from '../packages/agy-cli/mitm/broker.mjs'
 import { WireStore, projectCc } from '../packages/agy-cli/mitm/protocol.mjs'
-import { AGY_IDENTITY, AGY_NATIVE_SECURITY, KNOWN_REFUSED_SYSTEM_HASHES, systemFingerprint, assertForwardableSystem } from '../packages/agy-cli/mitm/system-policy.mjs'
+import { AGY_IDENTITY, AGY_NATIVE_SECURITY, KNOWN_REFUSED_SYSTEM_HASHES, systemFingerprint, assertForwardableSystem, assertSupportedClient } from '../packages/agy-cli/mitm/system-policy.mjs'
 import { createCcServer } from '../packages/agy-cli/cc-http.mjs'
+
+test('client identity is required in system instructions before forwarding', async () => {
+  const cc="You are Claude Code, Anthropic's official CLI for Claude."
+  const dsh='You are an AI agent powered by DeepSeek Harness.'
+  assert.doesNotThrow(()=>assertSupportedClient({system:[{type:'text',text:cc}]}))
+  assert.doesNotThrow(()=>assertSupportedClient({messages:[{role:'system',content:dsh}]}))
+  assert.throws(()=>assertSupportedClient({system:'You are another assistant.',messages:[{role:'user',content:cc}]}),/Unsupported client identity/)
+  let forwarded=0
+  const broker=new MitmBroker({token:'control',drive:async()=>{forwarded++}})
+  const response=await broker.fetch('/v1/messages',{body:JSON.stringify({model:'fixture',system:'You are another assistant.',messages:[{role:'user',content:'hello'}]})})
+  assert.equal(response.status,400);assert.equal(forwarded,0)
+})
 
 test('DSH system identity is replaced without changing surrounding instructions or user text', () => {
   const identity = 'You are an AI agent powered by DeepSeek Harness.'
@@ -85,7 +97,7 @@ test('HTTP tool roundtrip retains signed upstream call and does not repeat it on
   t.after(async()=>{await server.close();await broker.close();fs.rmSync(root,{recursive:true,force:true})})
   const url=`http://127.0.0.1:${server.server.address().port}/v1/messages`
   const post=(body,key)=>fetch(url,{method:'POST',headers:{'x-api-key':'test','idempotency-key':key},body:JSON.stringify(body)})
-  const request={model:'fixture',max_tokens:256,system:'Claude instructions',messages:[{role:'user',content:'Read proof.txt'}],tools:[{name:'Read',input_schema:{type:'object'}}]}
+  const request={model:'fixture',max_tokens:256,system:"You are Claude Code, Anthropic's official CLI for Claude.",messages:[{role:'user',content:'Read proof.txt'}],tools:[{name:'Read',input_schema:{type:'object'}}]}
   const first=await(await post(request,'first')).json()
   assert.equal(first.stop_reason,'tool_use');assert.equal(first.usage.cache_read_input_tokens,25)
   assert.deepEqual(await(await post(request,'first')).json(),first);assert.equal(forwards,1)
@@ -113,7 +125,7 @@ test('upstream 429 details and retry-after reach the client without a retry', as
   server = createCcServer({fetchMessages:broker.fetch,stateDir:path.join(root,'journal'),token:'test',statelessRequests:true})
   server.server.listen(0,'127.0.0.1'); await once(server.server,'listening')
   t.after(async()=>{await server.close();await broker.close();fs.rmSync(root,{recursive:true,force:true})})
-  const response = await fetch(`http://127.0.0.1:${server.server.address().port}/v1/messages`,{method:'POST',headers:{'x-api-key':'test'},body:JSON.stringify({model:'fixture',stream:true,messages:[{role:'user',content:'hello'}]})})
+  const response = await fetch(`http://127.0.0.1:${server.server.address().port}/v1/messages`,{method:'POST',headers:{'x-api-key':'test'},body:JSON.stringify({model:'fixture',system:'You are an AI agent powered by DeepSeek Harness.',stream:true,messages:[{role:'user',content:'hello'}]})})
   assert.equal(response.status,429)
   assert.equal(response.headers.get('retry-after'),'42')
   assert.equal(response.headers.get('x-should-retry'),'false')
