@@ -11,7 +11,7 @@ export class CliCarrier {
     this.limit=Number(env.AGY_ACP_CONCURRENCY||8)
     if(!Number.isInteger(this.limit)||this.limit<1||this.limit>64)throw Error('AGY_ACP_CONCURRENCY must be between 1 and 64')
     this.child=null;this.ready=false;this.starting=null;this.retired=Promise.resolve();this.epoch=0
-    this.pending=new Map();this.sessions=new Map();this.reusedSessions=new Map();this.scopeQueues=new Map();this.nextId=0;this.active=0;this.waiters=[];this.created=0;this.turns=0
+    this.pending=new Map();this.sessions=new Map();this.reusedSessions=new Map();this.scopeQueues=new Map();this.nextId=0;this.active=0;this.waiters=[];this.created=0
     this.stats={starts:0,acks:0}
   }
   async enter(){
@@ -20,8 +20,6 @@ export class CliCarrier {
   }
   leave(){
     this.active--
-    // Retire idle processes periodically without interrupting active sessions.
-    if(!this.active&&this.turns>=32)this.stop()
     if(this.waiters.length){this.active++;this.waiters.shift()()}
   }
   run=async job=>{
@@ -66,7 +64,6 @@ export class CliCarrier {
         saved.model=job.body.model
       }
       if(job.done)return
-      this.turns++
       const result=await this.request('session/prompt',{sessionId,prompt:[{type:'text',text:job.marker+'\nReply only AGY_CC_CARRIER_ACK. Do not call tools.'}]},125000,controller.signal)
       if(controller.signal.aborted)return
       if(turn.invalid||turn.text.trim()!=='AGY_CC_CARRIER_ACK'||result?.stopReason!=='end_turn')throw fail('Official CLI carrier did not acknowledge the intercepted turn',502)
@@ -153,7 +150,7 @@ export class CliCarrier {
   notify(method,params){this.write({jsonrpc:'2.0',method,params})}
   recordStats(){fs.writeFileSync(path.join(this.workspace,'carrier-stats.json'),JSON.stringify(this.stats),{mode:0o600})}
   stop(){
-    this.epoch++;const child=this.child;this.child=null;this.ready=false;this.created=0;this.turns=0;this.reusedSessions.clear()
+    this.epoch++;const child=this.child;this.child=null;this.ready=false;this.created=0;this.reusedSessions.clear()
     for(const entry of [...this.pending.values()])entry.finish(fail('Official CLI carrier retired',409))
     this.sessions.clear()
     if(!child)return this.retired
