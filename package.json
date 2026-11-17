@@ -1,10 +1,13 @@
 {
-  "name": "agy-anthropic-gateway",
-  "private": true,
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "name": "@xhzq233/magpie-agy",
+  "version": "0.2.0",
+  "description": "Magpie provider using the official Antigravity CLI",
   "type": "module",
-  "scripts": {
-    "usage": "node quota.mjs",
-    "test": "node --test tests/*.mjs && python3 tests/refusal.py"
-  }
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "files": ["index.mjs", "plugin-runtime.mjs", "magpie.middleware.mjs", "packages/agy-cli", "LICENSE", "LICENSES"],
+  "keywords": ["magpie", "magpie-plugin", "antigravity", "agy"],
+  "magpie": { "maxConcurrency": 16, "middleware": "./magpie.middleware.mjs" },
+  "scripts": { "test": "node --test tests/*.mjs && python3 tests/transport.py" }
 }
