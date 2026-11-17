@@ -4,7 +4,7 @@ import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { accountHome, runtimeFor } from './plugin-runtime.mjs'
 
-const PROVIDER='claude',SDK='@ai-sdk/anthropic',BASE='agy://local'
+const PROVIDER='claude-agy',SDK='@ai-sdk/anthropic',BASE='agy://local'
 const errors=(status,message)=>Response.json({type:'error',error:{type:status===400?'invalid_request_error':'api_error',message}},{status,headers:{'x-should-retry':'false'}})
 function chosenHome(value){
   const input=typeof value==='string'&&value.trim()?value.trim():os.homedir()
