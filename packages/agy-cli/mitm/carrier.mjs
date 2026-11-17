@@ -5,14 +5,14 @@ import { fail } from './protocol.mjs'
 // Persistent official CLI, serial tiny carrier turns. Never consumes CC tools,
 // real model text or model function calls. The MITM routes those directly to CC.
 export class CliCarrier {
-  constructor({agy,workspace,env}) {this.agy=agy;this.workspace=workspace;this.env=env;this.queue=Promise.resolve();this.child=null;this.pending=null;this.completed=0;this.stats={starts:0,acks:0}}
+  constructor({agy,workspace,env}) {this.agy=agy;this.workspace=workspace;this.env=env;this.queue=Promise.resolve();this.retired=Promise.resolve();this.child=null;this.pending=null;this.completed=0;this.stats={starts:0,acks:0}}
   run=job=>{
     const task=this.queue.catch(()=>{}).then(()=>this.turn(job));this.queue=task;return task
   }
   async turn(job) {
     if(job.done)return
     job.cancel=()=>this.stop() // Init may be slow; cancellation must already own this process.
-    if(!this.child || this.model!==job.body.model || this.completed>=32){this.stop();await this.start(job.body.model)}
+    if(!this.child || this.model!==job.body.model || this.completed>=32){await this.stop();if(job.done)return;await this.start(job.body.model)}
     if(job.done)return
     return new Promise((resolve,reject)=>{
       this.pending={job,resolve,reject};job.cancel=()=>this.stop()
@@ -28,10 +28,11 @@ export class CliCarrier {
     child.stderr.on('data',()=>{}) // Never log private CLI/auth output.
     child.stdin.on('error',()=>{})
     await new Promise((ready,reject)=>{
-      const timer=setTimeout(()=>{reject(fail('Official CLI init timed out',504));this.stop()},45000)
-      child.once('error',e=>{clearTimeout(timer);reject(e);this.stop()})
+      const timer=setTimeout(()=>{reject(fail('Official CLI init timed out',504));if(this.child===child)this.stop()},45000)
+      child.once('error',e=>{clearTimeout(timer);reject(e);if(this.child===child)this.stop()})
       child.once('exit',()=>{clearTimeout(timer);reject(fail('Official CLI exited',502));if(this.child===child)this.stop()})
       child.stdout.setEncoding('utf8');child.stdout.on('data',chunk=>{
+        if(this.child!==child)return
         buffer+=chunk;if(buffer.length>8*1024*1024){this.stop();return}
         let end
         while((end=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,end);buffer=buffer.slice(end+1);let e;try{e=JSON.parse(line)}catch{continue}
@@ -45,5 +46,18 @@ export class CliCarrier {
     })
   }
   recordStats(){fs.writeFileSync(path.join(this.workspace,'carrier-stats.json'),JSON.stringify(this.stats),{mode:0o600})}
-  stop(){const child=this.child;this.child=null;child?.kill('SIGTERM');const p=this.pending;this.pending=null;p?.reject(fail('Official CLI carrier retired',409))}
+  stop(){
+    const child=this.child;this.child=null
+    const p=this.pending;this.pending=null;p?.reject(fail('Official CLI carrier retired',409))
+    if(!child)return this.retired
+    // Wait for the old CLI to close before starting a replacement. A stuck
+    // shutdown must not allow overlapping carriers or block the queue forever.
+    this.retired=new Promise(resolve=>{
+      if(child.exitCode!==null || child.signalCode!==null){resolve();return}
+      const timer=setTimeout(()=>child.kill('SIGKILL'),2000)
+      child.once('close',()=>{clearTimeout(timer);resolve()})
+      child.kill('SIGTERM')
+    })
+    return this.retired
+  }
 }

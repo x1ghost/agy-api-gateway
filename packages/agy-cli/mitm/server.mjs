@@ -48,6 +48,6 @@ const accountControl=accounts&&{
 const http=createCcServer({fetchMessages:broker.fetch,cancelSession:broker.cancelSession,resolveMessage:broker.resolveMessage,listModels:()=>modelProvider(),accountControl,stateDir:path.join(state,'journal'),token,upstreamTransport:'mitm-no-mcp',statelessRequests:true})
 http.server.listen(port,'127.0.0.1',()=>process.stderr.write(`Anthropic-compatible gateway on 127.0.0.1:${port}\n`))
 let closing=false
-async function close(){if(closing)return;closing=true;await http.close();carrier.stop();await broker.close()}
+async function close(){if(closing)return;closing=true;await http.close();carrier.stop();await broker.close();await carrier.stop()}
 process.once('SIGTERM',()=>close().then(()=>process.exit(0)))
 process.once('SIGINT',()=>close().then(()=>process.exit(0)))
