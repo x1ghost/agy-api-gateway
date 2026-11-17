@@ -13,6 +13,7 @@ test('client identity is required in system instructions before forwarding', asy
   const cc="You are Claude Code, Anthropic's official CLI for Claude."
   const dsh='You are an AI agent powered by DeepSeek Harness.'
   assert.doesNotThrow(()=>assertSupportedClient({system:[{type:'text',text:cc}]}))
+  assert.doesNotThrow(()=>assertSupportedClient({system:"You are a Claude agent, built on Anthropic's Claude Agent SDK."}))
   assert.doesNotThrow(()=>assertSupportedClient({messages:[{role:'system',content:dsh}]}))
   assert.throws(()=>assertSupportedClient({system:'You are another assistant.',messages:[{role:'user',content:cc}]}),/Unsupported client identity/)
   let forwarded=0

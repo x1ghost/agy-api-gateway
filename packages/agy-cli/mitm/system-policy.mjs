@@ -9,6 +9,7 @@ const SDK_BILLING = /^x\s*[-_]\s*(?:anthropic|antigravity|anti\s+gravity)\s*[-_]
 const DSH_IDENTITY = /^you are an ai agent powered by deepseek harness\.$/i
 function isSupportedClientIdentity(line) {
   if (DSH_IDENTITY.test(line)) return true
+  if (/^you are a claude agent, built on anthropic's claude agent sdk\.$/i.test(line)) return true
   return /^you(?:\s+are|'re)\s+/i.test(line) && /\bclaude\s+code\b/i.test(line) && /\bofficial\b/i.test(line) && /\bcli\b/i.test(line)
 }
 export function assertSupportedClient(body) {
