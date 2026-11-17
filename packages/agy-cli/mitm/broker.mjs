@@ -1,6 +1,6 @@
 import http from 'node:http'
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
-import { AGY_NATIVE_SECURITY, assertSupportedClient } from './system-policy.mjs'
+import { AGY_NATIVE_SECURITY, assertSupportedClient, isDshUserAgent } from './system-policy.mjs'
 import { WireStore, WireTurn, projectCc, replaceRequest, fail } from './protocol.mjs'
 const errorResponse=e=>Response.json({type:'error',error:{type:e.status===429?'rate_limit_error':'invalid_request_error',message:e.message,...(e.upstreamError?{upstream_error:e.upstreamError}:{})}},{status:e.status||502,headers:{'x-should-retry':'false',...(e.retryAfter?{'retry-after':e.retryAfter}:{})}})
 function upstreamFailure(status, encoded, retryAfter) {
@@ -32,7 +32,8 @@ export class MitmBroker {
     if(url.endsWith('/count_tokens'))return errorResponse(fail('Exact token counting is not implemented',400))
     let body,projected
     const started=Date.now()
-    try {body=JSON.parse(options.body);assertSupportedClient(body);projected=projectCc(body,this.store);this.preflight?.(projected)}catch(e){return errorResponse(e)}
+    const dsh=isDshUserAgent(options.userAgent)
+    try {body=JSON.parse(options.body);assertSupportedClient(body,options.userAgent);projected=projectCc(body,this.store,{dsh});this.preflight?.(projected)}catch(e){return errorResponse(e)}
     const system=JSON.stringify(projected.systemInstruction.parts), systemText=projected.systemInstruction.parts.map(p=>p.text).join('\n')
     const diagnostic={request_id:options.requestId,model:/^[A-Za-z0-9._/-]{1,160}$/.test(body.model)?body.model:'<invalid>',system_sha256:createHash('sha256').update(system).digest('hex'),system_bytes:Buffer.byteLength(system),native_safety_blocks:systemText.split(AGY_NATIVE_SECURITY).length-1,messages:body.messages.length,tools:(body.tools||[]).length,max_tokens:body.max_tokens??null,thinking:body.thinking?.type??null}
     let logged=false
@@ -44,7 +45,7 @@ export class MitmBroker {
     const completion=new Promise(r=>{resolveCompletion=r})
     const response=new Promise(r=>{resolveResponse=r})
     if(body.stream)stream=new ReadableStream({start(c){controller=c}})
-    const job={ticket,httpRequestId:options.requestId,marker:`AGY_CC_CARRIER_${ticket}`,scope:body.metadata?.user_id,body,claimed:false,done:false,responseStarted:false,status:null,
+    const job={ticket,httpRequestId:options.requestId,marker:`AGY_CC_CARRIER_${ticket}`,scope:body.metadata?.user_id,body,dsh,claimed:false,done:false,responseStarted:false,status:null,
       emit:(name,data)=>{if(body.stream&&!job.done)controller.enqueue(sse(name,data))},
       headers:(status,errorBody,retryAfter)=>{
         if(job.status!==null)throw fail('Duplicate upstream headers',409)
@@ -93,7 +94,7 @@ export class MitmBroker {
       if(req.url==='/claim') {
         if(job.claimed)throw fail('A ticket can forward only once; no CLI retry',409)
         if(!JSON.stringify(input.envelope.request?.contents||[]).includes(job.marker))throw fail('Carrier marker missing',409)
-        const payload=replaceRequest(input.envelope,job.body,this.store);job.claimed=true
+        const payload=replaceRequest(input.envelope,job.body,this.store,{dsh:job.dsh});job.claimed=true
         res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({payload}));return
       }
       if(req.url!=='/event'||!job.claimed)throw fail('Unclaimed or unknown control event',409)

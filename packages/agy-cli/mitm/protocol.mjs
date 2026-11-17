@@ -211,7 +211,7 @@ function crossModelParts(wire) {
     const result={...part};delete result.thoughtSignature;return result
   }).filter(part=>Object.keys(part).length&&!(part.text===''&&Object.keys(part).length===1))
 }
-export function projectCc(body, store) {
+export function projectCc(body, store, {dsh=false}={}) {
   if(!object(body)||typeof body.model!=='string'||!Array.isArray(body.messages)||!body.messages.length)throw fail('model and messages required')
   const display=thinkingDisplay(body)
   if(body.stop_sequences?.length || body.output_format || body.output_config && Object.keys(body.output_config).some(k=>k!=='effort'))throw fail('Stop sequences and structured output are not implemented')
@@ -271,7 +271,7 @@ export function projectCc(body, store) {
   }
   if(pending.length)throw fail('Cannot generate until every pending tool_result has arrived')
   if(contents.at(-1).role!=='user')throw fail('Assistant prefill is not implemented')
-  const system=[...textParts(body.system||''),...systemMessages.flatMap(m=>textParts(m.content))].map(p=>{const text=removeDshProductNotes(removeClientProductNotes(rewriteSystemIdentity(p.text)));return {text:process.env.AGY_CC_NATIVE_SECURITY_SWAP==='0' ? text : replaceKnownSecurity(text)}})
+  const system=[...textParts(body.system||''),...systemMessages.flatMap(m=>textParts(m.content))].map(p=>{const text=removeDshProductNotes(removeClientProductNotes(rewriteSystemIdentity(p.text,{dsh})));return {text:process.env.AGY_CC_NATIVE_SECURITY_SWAP==='0' ? text : replaceKnownSecurity(text)}})
   const generationConfig={}
   if(display)generationConfig.thinkingConfig={includeThoughts:display==='summarized'}
   if(body.output_config?.effort!==undefined) {
@@ -288,9 +288,9 @@ export function projectCc(body, store) {
   if(!mode || choice.type==='tool'&&!declarations.some(d=>d.name===choice.name))throw fail('Invalid tool_choice')
   return {systemInstruction:{parts:system},contents,tools:declarations.length?[{functionDeclarations:declarations}]:[],toolConfig:{functionCallingConfig:{mode,...(choice.type==='tool'?{allowedFunctionNames:[choice.name]}:{})}},generationConfig}
 }
-export function replaceRequest(envelope, body, store) {
+export function replaceRequest(envelope, body, store, options) {
   if(!object(envelope.request)||envelope.model!==body.model)throw fail('Official CLI model/envelope mismatch',409)
-  const p=projectCc(body,store)
+  const p=projectCc(body,store,options)
   // Drop CLI tools, context, metadata and unknown request-level additions. The
   // official authentication/routing envelope is retained, never fabricated.
   return {...structuredClone(envelope),request:{...(envelope.request.sessionId?{sessionId:envelope.request.sessionId}:{}),...p,generationConfig:{...p.generationConfig,...((envelope.request.generationConfig?.thinkingConfig||p.generationConfig.thinkingConfig)?{thinkingConfig:{...structuredClone(envelope.request.generationConfig?.thinkingConfig||{}),...p.generationConfig.thinkingConfig}}:{})}}}

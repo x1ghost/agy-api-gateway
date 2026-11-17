@@ -15,6 +15,8 @@ test('client identity is required in system instructions before forwarding', asy
   assert.doesNotThrow(()=>assertSupportedClient({system:[{type:'text',text:cc}]}))
   assert.doesNotThrow(()=>assertSupportedClient({system:"You are a Claude agent, built on Anthropic's Claude Agent SDK."}))
   assert.doesNotThrow(()=>assertSupportedClient({messages:[{role:'system',content:dsh}]}))
+  assert.doesNotThrow(()=>assertSupportedClient({system:'Custom DSH agent'},'deepseek-harness/1.0.0 (+https://example.test)'))
+  assert.throws(()=>assertSupportedClient({system:'Custom agent'},'unrelated/1.0'),/Unsupported client identity/)
   assert.throws(()=>assertSupportedClient({system:'You are another assistant.',messages:[{role:'user',content:cc}]}),/Unsupported client identity/)
   let forwarded=0
   const broker=new MitmBroker({token:'control',drive:async()=>{forwarded++}})
@@ -118,7 +120,8 @@ test('upstream 429 details and retry-after reach the client without a retry', as
   }
   broker = new MitmBroker({token:'control',storeDir:path.join(root,'wire'),logger: row => diagnostics.push(row),drive:async job=>{
     forwards++
-    await ctl('/claim',{ticket:job.ticket,envelope:{model:'fixture',request:{contents:[{role:'user',parts:[{text:job.marker}]}]}}})
+    const claim=await ctl('/claim',{ticket:job.ticket,envelope:{model:'fixture',request:{contents:[{role:'user',parts:[{text:job.marker}]}]}}})
+    assert.equal(claim.payload.request.systemInstruction.parts[0].text,AGY_IDENTITY+'\nKeep this instruction.')
     const error = {error:{message:'Synthetic quota exhausted',status:'RESOURCE_EXHAUSTED',details:[{reason:'QUOTA'}]}}
     await ctl('/event',{ticket:job.ticket,kind:'headers',status:429,error_body:Buffer.from(JSON.stringify(error)).toString('base64'),retry_after:'42'})
   }})
@@ -126,7 +129,7 @@ test('upstream 429 details and retry-after reach the client without a retry', as
   server = createCcServer({fetchMessages:broker.fetch,stateDir:path.join(root,'journal'),token:'test',statelessRequests:true})
   server.server.listen(0,'127.0.0.1'); await once(server.server,'listening')
   t.after(async()=>{await server.close();await broker.close();fs.rmSync(root,{recursive:true,force:true})})
-  const response = await fetch(`http://127.0.0.1:${server.server.address().port}/v1/messages`,{method:'POST',headers:{'x-api-key':'test'},body:JSON.stringify({model:'fixture',system:'You are an AI agent powered by DeepSeek Harness.',stream:true,messages:[{role:'user',content:'hello'}]})})
+  const response = await fetch(`http://127.0.0.1:${server.server.address().port}/v1/messages`,{method:'POST',headers:{'x-api-key':'test','user-agent':'deepseek-harness/1.0.0 (+https://example.test)'},body:JSON.stringify({model:'fixture',system:'You are a coding agent powered by the gemini-4-argon-high model.\nKeep this instruction.',stream:true,messages:[{role:'user',content:'hello'}]})})
   assert.equal(response.status,429)
   assert.equal(response.headers.get('retry-after'),'42')
   assert.equal(response.headers.get('x-should-retry'),'false')
