@@ -26,8 +26,19 @@ export function accountHome(auth){
   const home=fs.realpathSync(raw);if(!fs.statSync(home).isDirectory())throw Error('AGY HOME is not a directory')
   return home
 }
+export function accountConcurrency(home,env=process.env){
+  let limits={}
+  if(env.AGY_ACP_CONCURRENCY_BY_HOME){
+    try{limits=JSON.parse(env.AGY_ACP_CONCURRENCY_BY_HOME)}catch{throw Error('AGY_ACP_CONCURRENCY_BY_HOME must be a JSON object')}
+    if(!limits||typeof limits!=='object'||Array.isArray(limits))throw Error('AGY_ACP_CONCURRENCY_BY_HOME must be a JSON object')
+  }
+  const limit=Number(Object.hasOwn(limits,home)?limits[home]:env.AGY_ACP_CONCURRENCY||8)
+  if(!Number.isInteger(limit)||limit<1||limit>64)throw Error('AGY ACP concurrency must be between 1 and 64')
+  return limit
+}
 async function start(home){
   const agy=process.env.AGY_PATH||'agy', mitmdump=process.env.MITMDUMP_PATH||'mitmdump'
+  const concurrency=accountConcurrency(home)
   const key=createHash('sha256').update(home).digest('hex').slice(0,24)
   const root=process.env.AGY_MAGPIE_STATE_DIR||path.join(os.homedir(),'.local','state','agy-magpie')
   if(!path.isAbsolute(root))throw Error('AGY_MAGPIE_STATE_DIR must be an absolute path')
@@ -57,7 +68,7 @@ async function start(home){
     const system=process.env.AGY_SYSTEM_CA_BUNDLE?fs.readFileSync(process.env.AGY_SYSTEM_CA_BUNDLE,'utf8'):tls.rootCertificates.join('\n')
     fs.writeFileSync(trust,system+'\n'+fs.readFileSync(cert,'utf8'),{mode:0o600})
     const url=`http://127.0.0.1:${port}`
-    const env={...base,HTTPS_PROXY:url,HTTP_PROXY:url,ALL_PROXY:url,https_proxy:url,http_proxy:url,all_proxy:url,NO_PROXY:'localhost,127.0.0.1',no_proxy:'localhost,127.0.0.1',SSL_CERT_FILE:trust,NODE_EXTRA_CA_CERTS:cert,REQUESTS_CA_BUNDLE:trust,GRPC_DEFAULT_SSL_ROOTS_FILE_PATH:trust}
+    const env={...base,AGY_ACP_CONCURRENCY:String(concurrency),HTTPS_PROXY:url,HTTP_PROXY:url,ALL_PROXY:url,https_proxy:url,http_proxy:url,all_proxy:url,NO_PROXY:'localhost,127.0.0.1',no_proxy:'localhost,127.0.0.1',SSL_CERT_FILE:trust,NODE_EXTRA_CA_CERTS:cert,REQUESTS_CA_BUNDLE:trust,GRPC_DEFAULT_SSL_ROOTS_FILE_PATH:trust}
     carrier=new CliCarrier({agy,workspace,env})
     broker=new MitmBroker({token,storeDir:path.join(account,'wire'),drive:carrier.run,preflight:assertForwardableSystem,logger:()=>{}})
     const controlPort=await broker.listen()

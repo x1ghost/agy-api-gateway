@@ -5,6 +5,14 @@ import os from 'node:os'
 import path from 'node:path'
 import plugin, {AgyMagpiePlugin} from '../index.mjs'
 import {onProvider} from '../magpie.middleware.mjs'
+import {accountConcurrency} from '../plugin-runtime.mjs'
+
+test('per-home concurrency overrides the default independently',()=>{
+ const env={AGY_ACP_CONCURRENCY:'2',AGY_ACP_CONCURRENCY_BY_HOME:JSON.stringify({'/test/ultra':4})}
+ assert.equal(accountConcurrency('/test/ultra',env),4)
+ assert.equal(accountConcurrency('/test/other',env),2)
+ assert.throws(()=>accountConcurrency('/test/ultra',{...env,AGY_ACP_CONCURRENCY_BY_HOME:'{"/test/ultra":0}'}))
+})
 
 test('Magpie supplies account, session and subagent identities to the provider',async t=>{
  const home=fs.mkdtempSync(path.join(os.tmpdir(),'magpie-agy-'))
