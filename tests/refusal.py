@@ -72,6 +72,24 @@ with tempfile.TemporaryDirectory() as directory:
         assert bridge.counts['upstream429'] == 1 and not bridge.refused
         assert not module.Bridge().refused
     asyncio.run(check())
+    # AGY's own ACP title request is sent unchanged, without claiming a user turn.
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    with tempfile.TemporaryDirectory() as title_dir:
+        title_bridge = module.Bridge(Path(title_dir))
+        original_allow = module.ALLOW
+        module.ALLOW = True
+        try:
+            payload = {'model':'gemini-3.5-flash-lite','requestType':'checkpoint','request':{
+                'systemInstruction':{'parts':[{'text':'You are a conversation title generator.'}]},
+                'contents':[{'role':'user','parts':[{'text':'AGY_CC_CARRIER_'+'a'*32}]}]}}
+            raw = json.dumps(payload).encode()
+            request = types.SimpleNamespace(path='/v1internal:streamGenerateContent',host=module.HOST,content=raw)
+            title_flow = types.SimpleNamespace(request=request,metadata={},response=None)
+            asyncio.run(title_bridge.request(title_flow))
+            assert title_flow.response is None and title_flow.request.content == raw
+            assert title_bridge.counts['forwarded'] == 0
+        finally:
+            module.ALLOW = original_allow
     # Account mode preserves the old gate for the current HOME and keeps a
     # refusal on one account from stopping another, including after restart.
     asyncio.set_event_loop(asyncio.new_event_loop())

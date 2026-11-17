@@ -11,7 +11,7 @@ export class CliCarrier {
     this.limit=Number(env.AGY_ACP_CONCURRENCY||8)
     if(!Number.isInteger(this.limit)||this.limit<1||this.limit>64)throw Error('AGY_ACP_CONCURRENCY must be between 1 and 64')
     this.child=null;this.ready=false;this.starting=null;this.retired=Promise.resolve();this.epoch=0
-    this.pending=new Map();this.sessions=new Map();this.nextId=0;this.active=0;this.waiters=[];this.created=0
+    this.pending=new Map();this.sessions=new Map();this.reusedSessions=new Map();this.scopeQueues=new Map();this.nextId=0;this.active=0;this.waiters=[];this.created=0;this.turns=0
     this.stats={starts:0,acks:0}
   }
   async enter(){
@@ -21,32 +21,60 @@ export class CliCarrier {
   leave(){
     this.active--
     // Retire idle processes periodically without interrupting active sessions.
-    if(!this.active&&this.created>=32)this.stop()
+    if(!this.active&&this.turns>=32)this.stop()
     if(this.waiters.length){this.active++;this.waiters.shift()()}
   }
   run=async job=>{
-    await this.enter()
-    try {if(!job.done)await this.turn(job)} finally {this.leave()}
+    // Serialize turns only within the same client scope, including the period
+    // after the HTTP response has ended but before the CLI finishes its ACK.
+    const key=typeof job.scope==='string'&&job.scope?job.scope:null
+    const previous=key?this.scopeQueues.get(key):null
+    let release
+    const queued=new Promise(resolve=>{release=resolve})
+    if(key)this.scopeQueues.set(key,queued)
+    try {
+      if(previous)await previous
+      if(job.done)return
+      await this.enter()
+      try {if(!job.done)await this.turn(job,key)} finally {this.leave()}
+    } finally {
+      release()
+      if(key&&this.scopeQueues.get(key)===queued)this.scopeQueues.delete(key)
+    }
   }
-  async turn(job){
+  async turn(job,key){
     const controller=new AbortController();let sessionId
     job.cancel=()=>{controller.abort();if(sessionId)this.notify('session/cancel',{sessionId})}
     await this.ensure()
     if(job.done)return
-    this.created++
-    const session=await this.request('session/new',{cwd:this.workspace,mcpServers:[]},45000,controller.signal)
-    sessionId=session?.sessionId
-    if(typeof sessionId!=='string'||!sessionId)throw fail('Official AGY did not create an ACP session',502)
-    if(job.done){this.notify('session/cancel',{sessionId});return}
+    let saved=key?this.reusedSessions.get(key):undefined
+    sessionId=saved?.id
+    if(!sessionId){
+      const session=await this.request('session/new',{cwd:this.workspace,mcpServers:[]},45000,controller.signal)
+      sessionId=session?.sessionId
+      if(typeof sessionId!=='string'||!sessionId)throw fail('Official AGY did not create an ACP session',502)
+      this.created++
+      saved={id:sessionId,model:null}
+      if(key)this.reusedSessions.set(key,saved)
+    }
+    if(job.done){this.notify('session/cancel',{sessionId});if(key)this.reusedSessions.delete(key);return}
     const turn={text:'',invalid:false};this.sessions.set(sessionId,turn)
+    let completed=false
     try {
-      await this.request('session/set_model',{sessionId,modelId:job.body.model},45000,controller.signal)
+      if(saved.model!==job.body.model){
+        await this.request('session/set_model',{sessionId,modelId:job.body.model},45000,controller.signal)
+        saved.model=job.body.model
+      }
       if(job.done)return
+      this.turns++
       const result=await this.request('session/prompt',{sessionId,prompt:[{type:'text',text:job.marker+'\nReply only AGY_CC_CARRIER_ACK. Do not call tools.'}]},125000,controller.signal)
       if(controller.signal.aborted)return
       if(turn.invalid||turn.text.trim()!=='AGY_CC_CARRIER_ACK'||result?.stopReason!=='end_turn')throw fail('Official CLI carrier did not acknowledge the intercepted turn',502)
-      this.stats.acks++;this.recordStats()
-    } finally {this.sessions.delete(sessionId)}
+      completed=true;this.stats.acks++;this.recordStats()
+    } finally {
+      this.sessions.delete(sessionId)
+      if(!completed&&key&&this.reusedSessions.get(key)===saved)this.reusedSessions.delete(key)
+    }
   }
   async ensure(){
     if(this.child&&this.ready)return
@@ -125,7 +153,7 @@ export class CliCarrier {
   notify(method,params){this.write({jsonrpc:'2.0',method,params})}
   recordStats(){fs.writeFileSync(path.join(this.workspace,'carrier-stats.json'),JSON.stringify(this.stats),{mode:0o600})}
   stop(){
-    this.epoch++;const child=this.child;this.child=null;this.ready=false;this.created=0
+    this.epoch++;const child=this.child;this.child=null;this.ready=false;this.created=0;this.turns=0;this.reusedSessions.clear()
     for(const entry of [...this.pending.values()])entry.finish(fail('Official CLI carrier retired',409))
     this.sessions.clear()
     if(!child)return this.retired

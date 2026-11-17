@@ -34,7 +34,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
 })
 `,{mode:0o700})
   const carrier=new CliCarrier({agy:cli,workspace:dir,env:{...process.env,TEST_CARRIER_LOG:log}})
-  const job=model=>({body:{model},marker:'synthetic',done:false})
+  const job=(model,scope)=>({body:{model},scope,marker:'synthetic',done:false})
   const waitFor=async predicate=>{for(let n=0;n<100;n++){if(predicate())return;await new Promise(r=>setTimeout(r,10))}throw Error('fake AGY did not reach the expected state')}
   try {
     await Promise.all([carrier.run(job('a')),carrier.run(job('b'))])
@@ -48,6 +48,12 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     const results=await Promise.allSettled([a,b])
     assert.equal(results[0].status,'rejected');assert.equal(results[1].status,'fulfilled')
     assert.equal(carrier.stats.starts,1);assert.equal(carrier.stats.acks,3)
+    await Promise.all([carrier.run(job('a','same-client-session')),carrier.run(job('b','same-client-session'))])
+    const reused=fs.readFileSync(log,'utf8').split('\n').filter(x=>x.startsWith('prompt ')).slice(-2)
+    assert.equal(reused.length,2)
+    const [firstSession,secondSession]=reused.map(line=>line.split(' ')[1])
+    assert.equal(firstSession,secondSession)
+    assert.match(reused[0],/ a 1$/);assert.match(reused[1],/ b 1$/)
     await carrier.stop()
     await carrier.run(job('a'))
     assert.equal(carrier.stats.starts,2)

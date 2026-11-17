@@ -102,6 +102,21 @@ class Bridge:
   try:
    if flow.request.host!=HOST or p!='/v1internal:streamGenerateContent':raise ValueError('Unsupported generation route')
    payload=json.loads(flow.request.content)
+   request=payload.get('request',{})
+   contents=json.dumps(request.get('contents',[]))
+   system=json.dumps(request.get('systemInstruction',{}))
+   # AGY's own title generation belongs to the ACP session. Forward its
+   # authenticated request and response untouched; it is not a user turn.
+   title_request=(payload.get('requestType')=='checkpoint'
+                  and payload.get('model')=='gemini-3.5-flash-lite'
+                  and 'You are a conversation title generator.' in system
+                  and re.search(r'AGY_CC_CARRIER_[a-f0-9]{32}',contents))
+   if title_request:
+    if FIXTURES:
+     response={'response':{'candidates':[{'index':0,'content':{'role':'model','parts':[{'text':'Carrier Session'}]},'finishReason':'STOP'}]}}
+     flow.response=http.Response.make(200,('data: '+json.dumps(response)+'\n\n').encode(),{'content-type':'text/event-stream'})
+    elif not ALLOW or self.refused:raise ValueError('Model forwarding disabled')
+    return
    # Search newest contents first. Old marker strings in CLI carrier history
    # never get another forwarding permit after the ticket has been claimed.
    found=re.findall(r'AGY_CC_CARRIER_([a-f0-9]{32})',json.dumps(payload.get('request',{}).get('contents',[])))
