@@ -3,6 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto"
 import { modelPage, upstreamModel } from "./mitm/models.mjs"
+import { isDshUserAgent } from "./mitm/system-policy.mjs"
 
 const hash = value => createHash("sha256").update(value).digest("hex")
 const stable = value => JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
@@ -68,11 +69,11 @@ export function createCcServer({ fetchMessages, cancelSession = async () => {}, 
     }
     return account + `cc:${hash(id)}`
   }
-  async function pump(record, body) {
+  async function pump(record, body, userAgent) {
     let fd
     try {
       const response = await fetchMessages("agy://local/v1/messages", {
-        method: "POST", body: JSON.stringify(body), signal: record.controller.signal, requestId: record.meta.id,
+        method: "POST", body: JSON.stringify(body), signal: record.controller.signal, requestId: record.meta.id, userAgent,
       })
       record.meta.statusCode = response.status
       record.meta.headers = Object.fromEntries(response.headers)
@@ -237,7 +238,8 @@ export function createCcServer({ fetchMessages, cancelSession = async () => {}, 
       }
       body.model = upstreamModel(body.model)
       body.metadata = { ...body.metadata, user_id: sessionScope }
-      const requestHash = hash(stable(body))
+      const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : ''
+      const requestHash = hash(stable(isDshUserAgent(userAgent) ? {body,client:'dsh'} : body))
       const keyHeader = req.headers["idempotency-key"]
       if (keyHeader && (typeof keyHeader !== "string" || keyHeader.length > 256)) throw fail(400, "Invalid Idempotency-Key")
       const id = hash(`${sessionScope}\n${keyHeader || requestHash}`)
@@ -266,7 +268,7 @@ export function createCcServer({ fetchMessages, cancelSession = async () => {}, 
         save(record.meta)
         records.set(id, record)
         busy.set(sessionScope, record)
-        record.task = pump(record, body)
+        record.task = pump(record, body, userAgent)
       }
       record.subscribers.add(res)
       try { await subscribe(record, res) } finally { record.subscribers.delete(res) }

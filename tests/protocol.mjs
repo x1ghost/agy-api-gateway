@@ -5,9 +5,60 @@ import os from 'node:os'
 import path from 'node:path'
 import { once } from 'node:events'
 import { MitmBroker } from '../packages/agy-cli/mitm/broker.mjs'
-import { WireStore, projectCc } from '../packages/agy-cli/mitm/protocol.mjs'
-import { AGY_NATIVE_SECURITY, KNOWN_REFUSED_SYSTEM_HASHES, systemFingerprint, assertForwardableSystem } from '../packages/agy-cli/mitm/system-policy.mjs'
+import { WireStore, WireTurn, projectCc } from '../packages/agy-cli/mitm/protocol.mjs'
+import { AGY_IDENTITY, AGY_NATIVE_SECURITY, KNOWN_REFUSED_SYSTEM_HASHES, systemFingerprint, assertForwardableSystem, assertSupportedClient } from '../packages/agy-cli/mitm/system-policy.mjs'
 import { createCcServer } from '../packages/agy-cli/cc-http.mjs'
+
+test('client identity is required in system instructions before forwarding', async () => {
+  const cc="You are Claude Code, Anthropic's official CLI for Claude."
+  const dsh='You are an AI agent powered by DeepSeek Harness.'
+  assert.doesNotThrow(()=>assertSupportedClient({system:[{type:'text',text:cc}]}))
+  assert.doesNotThrow(()=>assertSupportedClient({system:"You are a Claude agent, built on Anthropic's Claude Agent SDK."}))
+  assert.doesNotThrow(()=>assertSupportedClient({messages:[{role:'system',content:dsh}]}))
+  assert.doesNotThrow(()=>assertSupportedClient({system:'Custom DSH agent'},'deepseek-harness/1.0.0 (+https://example.test)'))
+  assert.throws(()=>assertSupportedClient({system:'Custom agent'},'unrelated/1.0'),/Unsupported client identity/)
+  assert.throws(()=>assertSupportedClient({system:'You are another assistant.',messages:[{role:'user',content:cc}]}),/Unsupported client identity/)
+  let forwarded=0
+  const broker=new MitmBroker({token:'control',drive:async()=>{forwarded++}})
+  const response=await broker.fetch('/v1/messages',{body:JSON.stringify({model:'fixture',system:'You are another assistant.',messages:[{role:'user',content:'hello'}]})})
+  assert.equal(response.status,400);assert.equal(forwarded,0)
+})
+
+test('DSH system identity is replaced without changing surrounding instructions or user text', () => {
+  const identity = 'You are an AI agent powered by DeepSeek Harness.'
+  const request = {model:'fixture', system:`${identity}\nKeep the configured tools.`, messages:[{role:'user',content:identity}]}
+  const projected = projectCc(request, new WireStore())
+  assert.equal(projected.systemInstruction.parts[0].text, `${AGY_IDENTITY}\nKeep the configured tools.`)
+  assert.equal(projected.contents[0].parts[0].text, identity)
+  const other = projectCc({...request, system:`Explain: ${identity}`}, new WireStore())
+  assert.equal(other.systemInstruction.parts[0].text, `Explain: ${identity}`)
+})
+
+test('recognized DSH source and web guidance is removed from system text only', () => {
+  const notes = [
+    'The DeepSeek Harness implementation checkout is at /example. Use this checkout only to inspect or extend DSH itself.',
+    'You are interacting with the user through the DeepSeek Harness Web GUI at http://localhost. Only dsh web injects window.__DSH_BOOT__.',
+    'The runtime context names the DeepSeek Harness implementation checkout. Use pwd.',
+    'You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names. GUI instructions.'
+  ]
+  const user=notes.join('\n\n')
+  const projected=projectCc({model:'fixture',system:`Keep before.\n\n${user}\n\nKeep after.`,messages:[{role:'user',content:user}]},new WireStore())
+  const system=projected.systemInstruction.parts[0].text
+  assert.match(system,/Keep before\./);assert.match(system,/Keep after\./)
+  for(const note of notes) assert.ok(!system.includes(note))
+  assert.equal(projected.contents[0].parts[0].text,user)
+})
+
+test('complete tool calls accept empty partialArgs but reject actual partial arguments', () => {
+  const body={model:'fixture',messages:[{role:'user',content:'hello'}],tools:[{name:'get_goal',input_schema:{type:'object',properties:{}}}]}
+  const turn=partialArgs=>{
+    const t=new WireTurn(body,new WireStore(),()=>{})
+    t.push(Buffer.from('data: '+JSON.stringify({response:{candidates:[{content:{parts:[{functionCall:{name:'get_goal',args:{},partialArgs}}]},finishReason:'STOP'}]}})+'\n\n'))
+    return t
+  }
+  assert.deepEqual(turn([]).finish().content[0].input,{})
+  assert.throws(()=>turn([{jsonPath:'$.value',stringValue:'partial'}]).finish(),/streamed tool arguments/)
+})
 
 test('default safety substitution reaches the model while user and tool text remain intact', () => {
   const paragraph = 'Synthetic security instruction.', hash = systemFingerprint(paragraph)
@@ -60,7 +111,7 @@ test('HTTP tool roundtrip retains signed upstream call and does not repeat it on
   t.after(async()=>{await server.close();await broker.close();fs.rmSync(root,{recursive:true,force:true})})
   const url=`http://127.0.0.1:${server.server.address().port}/v1/messages`
   const post=(body,key)=>fetch(url,{method:'POST',headers:{'x-api-key':'test','idempotency-key':key},body:JSON.stringify(body)})
-  const request={model:'fixture',max_tokens:256,system:'Claude instructions',messages:[{role:'user',content:'Read proof.txt'}],tools:[{name:'Read',input_schema:{type:'object'}}]}
+  const request={model:'fixture',max_tokens:256,system:"You are Claude Code, Anthropic's official CLI for Claude.",messages:[{role:'user',content:'Read proof.txt'}],tools:[{name:'Read',input_schema:{type:'object'}}]}
   const first=await(await post(request,'first')).json()
   assert.equal(first.stop_reason,'tool_use');assert.equal(first.usage.cache_read_input_tokens,25)
   assert.deepEqual(await(await post(request,'first')).json(),first);assert.equal(forwards,1)
@@ -80,7 +131,8 @@ test('upstream 429 details and retry-after reach the client without a retry', as
   }
   broker = new MitmBroker({token:'control',storeDir:path.join(root,'wire'),logger: row => diagnostics.push(row),drive:async job=>{
     forwards++
-    await ctl('/claim',{ticket:job.ticket,envelope:{model:'fixture',request:{contents:[{role:'user',parts:[{text:job.marker}]}]}}})
+    const claim=await ctl('/claim',{ticket:job.ticket,envelope:{model:'fixture',request:{contents:[{role:'user',parts:[{text:job.marker}]}]}}})
+    assert.equal(claim.payload.request.systemInstruction.parts[0].text,AGY_IDENTITY+'\nKeep this instruction.')
     const error = {error:{message:'Synthetic quota exhausted',status:'RESOURCE_EXHAUSTED',details:[{reason:'QUOTA'}]}}
     await ctl('/event',{ticket:job.ticket,kind:'headers',status:429,error_body:Buffer.from(JSON.stringify(error)).toString('base64'),retry_after:'42'})
   }})
@@ -88,7 +140,7 @@ test('upstream 429 details and retry-after reach the client without a retry', as
   server = createCcServer({fetchMessages:broker.fetch,stateDir:path.join(root,'journal'),token:'test',statelessRequests:true})
   server.server.listen(0,'127.0.0.1'); await once(server.server,'listening')
   t.after(async()=>{await server.close();await broker.close();fs.rmSync(root,{recursive:true,force:true})})
-  const response = await fetch(`http://127.0.0.1:${server.server.address().port}/v1/messages`,{method:'POST',headers:{'x-api-key':'test'},body:JSON.stringify({model:'fixture',stream:true,messages:[{role:'user',content:'hello'}]})})
+  const response = await fetch(`http://127.0.0.1:${server.server.address().port}/v1/messages`,{method:'POST',headers:{'x-api-key':'test','user-agent':'deepseek-harness/1.0.0 (+https://example.test)'},body:JSON.stringify({model:'fixture',system:'You are a coding agent powered by the gemini-4-argon-high model.\nKeep this instruction.',stream:true,messages:[{role:'user',content:'hello'}]})})
   assert.equal(response.status,429)
   assert.equal(response.headers.get('retry-after'),'42')
   assert.equal(response.headers.get('x-should-retry'),'false')
