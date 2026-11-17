@@ -19,6 +19,21 @@ test('DSH system identity is replaced without changing surrounding instructions 
   assert.equal(other.systemInstruction.parts[0].text, `Explain: ${identity}`)
 })
 
+test('recognized DSH source and web guidance is removed from system text only', () => {
+  const notes = [
+    'The DeepSeek Harness implementation checkout is at /example. Use this checkout only to inspect or extend DSH itself.',
+    'You are interacting with the user through the DeepSeek Harness Web GUI at http://localhost. Only dsh web injects window.__DSH_BOOT__.',
+    'The runtime context names the DeepSeek Harness implementation checkout. Use pwd.',
+    'You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names. GUI instructions.'
+  ]
+  const user=notes.join('\n\n')
+  const projected=projectCc({model:'fixture',system:`Keep before.\n\n${user}\n\nKeep after.`,messages:[{role:'user',content:user}]},new WireStore())
+  const system=projected.systemInstruction.parts[0].text
+  assert.match(system,/Keep before\./);assert.match(system,/Keep after\./)
+  for(const note of notes) assert.ok(!system.includes(note))
+  assert.equal(projected.contents[0].parts[0].text,user)
+})
+
 test('default safety substitution reaches the model while user and tool text remain intact', () => {
   const paragraph = 'Synthetic security instruction.', hash = systemFingerprint(paragraph)
   const previous = process.env.AGY_CC_NATIVE_SECURITY_SWAP

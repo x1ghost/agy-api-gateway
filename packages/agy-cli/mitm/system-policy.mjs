@@ -27,6 +27,17 @@ export function rewriteSystemIdentity(text) {
   }).join('')
 }
 
+// Remove only the DSH source and Web GUI guidance paragraphs, including their
+// older value-bearing versions. Other system instructions remain intact.
+export function removeDshProductNotes(text) {
+  return text.split(/(\r?\n\s*\r?\n)/).map(part => {
+    const p = part.trim()
+    if (/^The (?:DeepSeek Harness implementation checkout is at |runtime context names the DeepSeek Harness implementation checkout\.)/i.test(p)) return ''
+    if (/^You are interacting with the user through the DeepSeek Harness Web GUI (?:at |whose URL the runtime context names\.)/i.test(p)) return ''
+    return part
+  }).join('')
+}
+
 // Preserve paths, URLs and filenames in tool descriptions: they may be
 // executable instructions, unlike product names in ordinary prose.
 export function rewriteToolDescription(text) {

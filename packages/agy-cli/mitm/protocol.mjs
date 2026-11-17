@@ -2,7 +2,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { rewriteSystemIdentity, replaceKnownSecurity, removeClientProductNotes, rewriteToolDescription } from './system-policy.mjs'
+import { rewriteSystemIdentity, replaceKnownSecurity, removeClientProductNotes, removeDshProductNotes, rewriteToolDescription } from './system-policy.mjs'
 export const stable = value => JSON.stringify(value, (_k, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map(k => [k,v[k]])) : v)
 export const fail = (message, status = 400) => Object.assign(new Error(message), { status })
 const object = v => v && typeof v === 'object' && !Array.isArray(v)
@@ -271,7 +271,7 @@ export function projectCc(body, store) {
   }
   if(pending.length)throw fail('Cannot generate until every pending tool_result has arrived')
   if(contents.at(-1).role!=='user')throw fail('Assistant prefill is not implemented')
-  const system=[...textParts(body.system||''),...systemMessages.flatMap(m=>textParts(m.content))].map(p=>{const text=removeClientProductNotes(rewriteSystemIdentity(p.text));return {text:process.env.AGY_CC_NATIVE_SECURITY_SWAP==='0' ? text : replaceKnownSecurity(text)}})
+  const system=[...textParts(body.system||''),...systemMessages.flatMap(m=>textParts(m.content))].map(p=>{const text=removeDshProductNotes(removeClientProductNotes(rewriteSystemIdentity(p.text)));return {text:process.env.AGY_CC_NATIVE_SECURITY_SWAP==='0' ? text : replaceKnownSecurity(text)}})
   const generationConfig={}
   if(display)generationConfig.thinkingConfig={includeThoughts:display==='summarized'}
   if(body.output_config?.effort!==undefined) {
