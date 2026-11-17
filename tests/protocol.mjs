@@ -128,7 +128,7 @@ test('Claude streamed thought fragments replay as one signed thinking block', ()
 test('switching models retains tool signatures without old reasoning', t => {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'agy-cross-'))
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}))
-  const source='claude-opus-fixture', target='gemini-fixture'
+  const source='gemini-4-carbon-medium', target='gemini-4-hydrogen-medium'
   const user={role:'user',content:'synthetic'}, content=[{type:'thinking',thinking:'',signature:'agyref_fixture'}, {type:'text',text:'visible'}, {type:'tool_use',id:'toolu_cross',name:'Read',input:{path:'x'}}]
   const original=[{thought:true,text:'secret thought',thoughtSignature:'thought-signature'}, {text:'visible',thoughtSignature:'text-signature'}, {functionCall:{name:'Read',args:{path:'x'},id:'original-id'},thoughtSignature:'tool-signature'}]
   new WireStore(dir).save(source,[user],content,original)
@@ -140,5 +140,7 @@ test('switching models retains tool signatures without old reasoning', t => {
   const split=[user,...content.map(block=>({role:'assistant',content:[block]})),messages[2]]
   const splitProjection=projectCc({model:target,messages:split,tools:[{name:'Read',input_schema:{type:'object'}}]},new WireStore(dir))
   assert.deepEqual(splitProjection.contents.filter(x=>x.role==='model').flatMap(x=>x.parts),[{text:'visible'},{functionCall:{name:'Read',args:{path:'x'},id:'original-id'},thoughtSignature:'tool-signature'}])
+  const claudeProjection=projectCc({model:'claude-opus-fixture',messages,tools:[{name:'Read',input_schema:{type:'object'}}]},new WireStore(dir))
+  assert.deepEqual(claudeProjection.contents[1].parts,[{text:'visible'},{functionCall:{name:'Read',args:{path:'x'},id:'original-id'}}])
   assert.deepEqual(projectCc({model:source,messages,tools:[{name:'Read',input_schema:{type:'object'}}]},store).contents[1].parts,original)
 })

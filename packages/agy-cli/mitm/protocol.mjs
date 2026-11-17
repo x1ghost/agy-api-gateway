@@ -205,11 +205,11 @@ function replayParts(model, wire) {
   }
   return result
 }
-// Keep the provider's function-call signatures when replaying tool history;
-// remove old reasoning and signatures on other parts when switching models.
-function crossModelParts(wire) {
+// Gemini requires its signed tool history. For a switch to Claude, AGY's
+// observed model-switch request omits the previous model's signatures.
+function crossModelParts(wire, targetModel) {
   return wire.filter(part=>part.thought!==true).map(part=>{
-    const result={...part};if(!result.functionCall)delete result.thoughtSignature;return result
+    const result={...part};if(!result.functionCall||!/^gemini[.-]/i.test(targetModel))delete result.thoughtSignature;return result
   }).filter(part=>Object.keys(part).length&&!(part.text===''&&Object.keys(part).length===1))
 }
 export function projectCc(body, store, {dsh=false}={}) {
@@ -249,7 +249,7 @@ export function projectCc(body, store, {dsh=false}={}) {
       if((pending.length||bs.some(b=>b.type==='thinking')) && !wire)throw fail('Tool/thinking history has no matching wire metadata; do not regenerate or invent signatures',409)
       // AGY can stream empty untyped text fragments. Claude rejects an empty
       // historical text block; discard only inert fragments, never signatures.
-      const parts=wire ? (crossModel?crossModelParts(wire):replayParts(body.model,wire)) : textParts(bs)
+      const parts=wire ? (crossModel?crossModelParts(wire,body.model):replayParts(body.model,wire)) : textParts(bs)
       if(parts.length)contents.push({role:'model',parts})
     } else {
       const results=bs.filter(b=>b.type==='tool_result'), other=bs.filter(b=>b.type!=='tool_result')
