@@ -60,6 +60,27 @@ test('undeclared tool errors identify valid names without echoing arbitrary outp
   assert.throws(invoke('arbitrary output with spaces'),e=>e.message==='Upstream called an undeclared tool')
 })
 
+test('a completed upstream response with an undeclared tool settles the proxy event', async t => {
+  let endResult
+  const broker=new MitmBroker({token:'control',logger:()=>{},drive:async job=>{
+    const ctl=async(route,data)=>fetch(`http://127.0.0.1:${broker.server.address().port}${route}`,{method:'POST',headers:{authorization:'Bearer control'},body:JSON.stringify(data)})
+    const claim=await ctl('/claim',{ticket:job.ticket,envelope:{model:'fixture',request:{contents:[{role:'user',parts:[{text:job.marker}]}]}}})
+    assert.equal(claim.status,200)
+    await ctl('/event',{ticket:job.ticket,kind:'headers',status:200})
+    const packet={response:{candidates:[{content:{parts:[{functionCall:{name:'unknown_tool',args:{}}}]},finishReason:'STOP'}]}}
+    await ctl('/event',{ticket:job.ticket,kind:'chunk',data:Buffer.from('data: '+JSON.stringify(packet)+'\n\n').toString('base64')})
+    const end=await ctl('/event',{ticket:job.ticket,kind:'end'})
+    endResult=[end.status,await end.json()]
+  }})
+  await broker.listen();t.after(()=>broker.close())
+  const body={model:'fixture',system:'You are an AI agent powered by DeepSeek Harness.',messages:[{role:'user',content:'hello'}],tools:[{name:'allowed',input_schema:{type:'object'}}]}
+  const response=await broker.fetch('/v1/messages',{body:JSON.stringify(body)})
+  assert.equal(response.status,502)
+  assert.match((await response.json()).error.message,/undeclared tool "unknown_tool"/)
+  while(!endResult)await new Promise(resolve=>setTimeout(resolve,1))
+  assert.deepEqual(endResult,[200,{ok:true,adapter_error:true}])
+})
+
 test('complete tool calls accept empty partialArgs but reject actual partial arguments', () => {
   const body={model:'fixture',messages:[{role:'user',content:'hello'}],tools:[{name:'get_goal',input_schema:{type:'object',properties:{}}}]}
   const turn=partialArgs=>{
