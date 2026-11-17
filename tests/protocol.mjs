@@ -49,7 +49,7 @@ test('recognized DSH source and web guidance is removed from system text only', 
   assert.equal(projected.contents[0].parts[0].text,user)
 })
 
-test('undeclared tool errors identify valid names without echoing arbitrary output', () => {
+test('undeclared tool errors identify valid and invalid names', () => {
   const body={model:'fixture',messages:[{role:'user',content:'hello'}],tools:[{name:'allowed',input_schema:{type:'object'}}]}
   const invoke=name=>{
     const t=new WireTurn(body,new WireStore(),()=>{})
