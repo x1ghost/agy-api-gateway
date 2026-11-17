@@ -367,7 +367,9 @@ export class WireTurn {
     const ids=new Set()
     for(const p of calls) {
       const f=p.functionCall
-      if(!this.body.tools?.some(t=>t.name===f.name)||!object(f.args)||f.partialArgs||f.willContinue)throw fail('Unknown, incomplete or streamed tool arguments are unsupported',502)
+      if(!this.body.tools?.some(t=>t.name===f.name))throw fail('Upstream called an undeclared tool',502)
+      if((f.partialArgs!==undefined && (!Array.isArray(f.partialArgs)||f.partialArgs.length>0)) || f.willContinue)throw fail('Upstream streamed tool arguments are unsupported',502)
+      if(!object(f.args))throw fail('Upstream tool call omitted or returned invalid arguments',502)
       if(f.id && ids.has(f.id))throw fail('Duplicate upstream functionCall ID',502)
       if(f.id)ids.add(f.id)
       const input=structuredClone(f.args),schema=this.body.tools.find(t=>t.name===f.name).input_schema

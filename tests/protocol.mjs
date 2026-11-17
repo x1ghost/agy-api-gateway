@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { once } from 'node:events'
 import { MitmBroker } from '../packages/agy-cli/mitm/broker.mjs'
-import { WireStore, projectCc } from '../packages/agy-cli/mitm/protocol.mjs'
+import { WireStore, WireTurn, projectCc } from '../packages/agy-cli/mitm/protocol.mjs'
 import { AGY_IDENTITY, AGY_NATIVE_SECURITY, KNOWN_REFUSED_SYSTEM_HASHES, systemFingerprint, assertForwardableSystem, assertSupportedClient } from '../packages/agy-cli/mitm/system-policy.mjs'
 import { createCcServer } from '../packages/agy-cli/cc-http.mjs'
 
@@ -47,6 +47,17 @@ test('recognized DSH source and web guidance is removed from system text only', 
   assert.match(system,/Keep before\./);assert.match(system,/Keep after\./)
   for(const note of notes) assert.ok(!system.includes(note))
   assert.equal(projected.contents[0].parts[0].text,user)
+})
+
+test('complete tool calls accept empty partialArgs but reject actual partial arguments', () => {
+  const body={model:'fixture',messages:[{role:'user',content:'hello'}],tools:[{name:'get_goal',input_schema:{type:'object',properties:{}}}]}
+  const turn=partialArgs=>{
+    const t=new WireTurn(body,new WireStore(),()=>{})
+    t.push(Buffer.from('data: '+JSON.stringify({response:{candidates:[{content:{parts:[{functionCall:{name:'get_goal',args:{},partialArgs}}]},finishReason:'STOP'}]}})+'\n\n'))
+    return t
+  }
+  assert.deepEqual(turn([]).finish().content[0].input,{})
+  assert.throws(()=>turn([{jsonPath:'$.value',stringValue:'partial'}]).finish(),/streamed tool arguments/)
 })
 
 test('default safety substitution reaches the model while user and tool text remain intact', () => {
