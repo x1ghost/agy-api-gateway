@@ -79,7 +79,7 @@ export async function AgyGatewayPlugin(_input, options = {}) {
             const {base,key}=account(await getAuth())
             const path=targetPath(new URL(req.url).pathname)
             const headers=new Headers({'x-api-key':key})
-            for(const name of ['content-type','accept','anthropic-version','anthropic-beta','user-agent']) {
+            for(const name of ['content-type','accept','anthropic-version','anthropic-beta','user-agent','x-cc-session-id','idempotency-key']) {
               const value=req.headers.get(name); if(value) headers.set(name,value)
             }
             if(!headers.has('anthropic-version')) headers.set('anthropic-version','2023-06-01')

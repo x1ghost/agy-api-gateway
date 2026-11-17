@@ -9,3 +9,5 @@ The provider reads `/v1/models` for the selected Gateway account, follows pagina
 The Gateway currently admits recognizable Claude Code and DeepSeek Harness identities. The plugin does not rewrite caller identity or impersonate a client. A Magpie version or configuration that replaces the original client's User-Agent may cause a DSH custom persona without the standard DSH identity to be rejected; the Gateway's identity check returns an explicit 400. Other client identities remain unsupported.
 
 To validate the plugin offline, run `node --test tests/magpie-provider.mjs`. Its endpoint, credentials, and model data are synthetic.
+
+Messages require a stable `metadata.user_id` or `X-CC-Session-ID`; the plugin preserves a supplied session header but does not invent a session ID when Magpie omits one.

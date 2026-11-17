@@ -8,7 +8,7 @@ test('Magpie provider signs in, discovers models and forwards streaming requests
   const received=[]
   const server=http.createServer(async(req,res)=>{
     const data=[]; for await(const b of req)data.push(b)
-    received.push({url:req.url,key:req.headers['x-api-key'],agent:req.headers['user-agent'],body:Buffer.concat(data).toString()})
+    received.push({url:req.url,key:req.headers['x-api-key'],agent:req.headers['user-agent'],session:req.headers['x-cc-session-id'],body:Buffer.concat(data).toString()})
     if(req.url.startsWith('/v1/models')) {
       res.setHeader('content-type','application/json')
       const after=new URL(req.url,'http://localhost').searchParams.get('after_id')
@@ -27,10 +27,10 @@ test('Magpie provider signs in, discovers models and forwards streaming requests
   assert.equal(models['gemini-flash'].api.url,base+'/v1')
   const loader=await plugin.auth.loader(async()=>auth)
   const payload=JSON.stringify({model:'gemini-flash',messages:[{role:'user',content:'hello'}],stream:true})
-  const response=await loader.fetch('plugin://agy-gateway/v1/messages',{method:'POST',headers:{'x-api-key':'other-key','user-agent':'deepseek-harness/1.0.0','content-type':'application/json'},body:payload})
+  const response=await loader.fetch('plugin://agy-gateway/v1/messages',{method:'POST',headers:{'x-api-key':'other-key','user-agent':'deepseek-harness/1.0.0','x-cc-session-id':'synthetic-session','content-type':'application/json'},body:payload})
   assert.equal(response.status,200);assert.match(await response.text(),/message_stop/)
   assert.deepEqual(received.map(r=>r.key),['test-key','test-key','test-key'])
-  assert.equal(received[2].agent,'deepseek-harness/1.0.0');assert.equal(received[2].body,payload)
+  assert.equal(received[2].agent,'deepseek-harness/1.0.0');assert.equal(received[2].session,'synthetic-session');assert.equal(received[2].body,payload)
   await assert.rejects(loader.fetch('https://example.invalid/admin',{method:'POST',body:'{}'}),/Unsupported Gateway endpoint/)
 })
 

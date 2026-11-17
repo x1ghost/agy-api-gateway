@@ -46,7 +46,7 @@ export AGY_PATH="$(command -v agy)"
 python3 gateway.py
 ```
 
-The service listens on `127.0.0.1:3437`. Pass the token as `x-api-key` or `Authorization: Bearer ...`. Use an AGY model ID actually available to your login, not an assumed Anthropic model ID. Clients may send ordinary Messages requests without an additional session identifier. Each request should use a unique `Idempotency-Key` when retryable replay is desired.
+The service listens on `127.0.0.1:3437`. Pass the token as `x-api-key` or `Authorization: Bearer ...`. Use an AGY model ID actually available to your login, not an assumed Anthropic model ID. Each Messages request must identify the client session using `metadata.user_id` or the `X-CC-Session-ID` header; requests without either are rejected. Each request should use a unique `Idempotency-Key` when retryable replay is desired.
 
 `AGY_CC_PORT` changes the gateway port; `AGY_MITM_PROXY_PORT` changes the private proxy port (default 3441); `MITMDUMP_PATH`, `NODE_PATH` and `AGY_SYSTEM_CA_BUNDLE` select executable or trust bundle paths. The state directory must be absolute, private and dedicated to one instance. It contains potentially sensitive response journals, tool arguments and signature metadata. Back it up and restrict access accordingly.
 
