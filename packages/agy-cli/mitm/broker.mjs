@@ -39,21 +39,20 @@ export class MitmBroker {
     let logged=false
     const log=(status,origin,usage)=>{
       if(logged)return;logged=true
-      try {this.logger({event:'generation',time:new Date().toISOString(),...diagnostic,status,origin,duration_ms:Date.now()-started,...(job.retryCount?{automatic_retries:job.retryCount}:{}),...(usage?{usage}: {})})} catch {} // Diagnostics never block model delivery.
+      try {this.logger({event:'generation',time:new Date().toISOString(),...diagnostic,status,origin,duration_ms:Date.now()-started,...(usage?{usage}: {})})} catch {} // Diagnostics never block model delivery.
     }
     const ticket=randomUUID().replaceAll('-','');let resolveResponse,resolveCompletion,stream,controller
     const completion=new Promise(r=>{resolveCompletion=r})
     const response=new Promise(r=>{resolveResponse=r})
     if(body.stream)stream=new ReadableStream({start(c){controller=c}})
-    const job={ticket,httpRequestId:options.requestId,marker:`AGY_CC_CARRIER_${ticket}`,scope:body.metadata?.user_id,body,dsh,claimed:false,done:false,responseStarted:false,hasContent:false,retryCount:0,retry:false,status:null,
-      emit:(name,data)=>{if(body.stream&&!job.done){if(name==='content_block_start')job.hasContent=true;controller.enqueue(sse(name,data))}},
+    const job={ticket,httpRequestId:options.requestId,marker:`AGY_CC_CARRIER_${ticket}`,scope:body.metadata?.user_id,body,dsh,claimed:false,done:false,responseStarted:false,status:null,
+      emit:(name,data)=>{if(body.stream&&!job.done)controller.enqueue(sse(name,data))},
       headers:(status,errorBody,retryAfter)=>{
         if(job.status!==null)throw fail('Duplicate upstream headers',409)
         job.status=status
         if(status!==200){job.abort(upstreamFailure(status,errorBody,retryAfter));return}
         job.turn=new WireTurn(body,this.store,job.emit)
-        if(job.messageId)job.turn.id=job.messageId;else job.messageId=job.turn.id
-        if(body.stream&&!job.responseStarted){job.responseStarted=true;resolveResponse(new Response(stream,{headers:{'content-type':'text/event-stream'}}));job.turn.start()}
+        if(body.stream){job.responseStarted=true;resolveResponse(new Response(stream,{headers:{'content-type':'text/event-stream'}}));job.turn.start()}
       },
       chunk:bytes=>{if(job.status!==200||!job.turn)throw fail('Chunk before successful headers',409);job.turn.push(bytes)},
       end:()=>{
@@ -72,11 +71,7 @@ export class MitmBroker {
     job.timer=setTimeout(()=>job.abort(fail('MITM carrier timed out',504)),this.timeoutMs)
     const abort=()=>job.abort(options.signal?.reason?.code==='CC_CANCELLED'?cancelled('CC generation cancelled'):fail('CC transport aborted unexpectedly',502));options.signal?.addEventListener('abort',abort,{once:true})
     this.jobs.set(ticket,job)
-    Promise.resolve().then(async()=>{
-      if(options.signal?.aborted){abort();return}
-      do {job.retry=false;await this.drive(job)} while(job.retry&&!job.done)
-      await completion
-    }).catch(e=>job.abort(e)).finally(()=>{this.jobs.delete(ticket);clearTimeout(job.timer);options.signal?.removeEventListener('abort',abort)})
+    Promise.resolve().then(()=>{if(options.signal?.aborted){abort();return}return this.drive(job)}).then(()=>completion).catch(e=>job.abort(e)).finally(()=>{this.jobs.delete(ticket);clearTimeout(job.timer);options.signal?.removeEventListener('abort',abort)})
     return response
   }
   async control(req,res) {
@@ -110,10 +105,6 @@ export class MitmBroker {
         else if(input.kind==='error')job.abort(fail('MITM transport failed',502))
         else throw fail('Unknown event')
       } catch(e){
-        if(input.kind==='end' && job.status===200 && e.code==='UNDECLARED_TOOL' && !job.hasContent && job.retryCount===0 && !job.done){
-          job.retryCount++;job.retry=true;job.claimed=false;job.status=null;job.turn=null
-          res.writeHead(200,{'content-type':'application/json'}).end('{"ok":true,"retry":true}');return
-        }
         job.abort(e)
         // A complete upstream response can fail our response adapter (for
         // example, an unknown tool). The client has received the error and

@@ -61,8 +61,8 @@ test('undeclared tool errors identify valid and invalid names', () => {
   assert.throws(invoke(undefined),e=>e.message==='Upstream called an undeclared tool (name missing; fields: args)')
 })
 
-test('a repeated undeclared tool error is returned and both proxy events are settled', async t => {
-  const endResults=[]
+test('a completed upstream response with an undeclared tool settles the proxy event', async t => {
+  let endResult
   const broker=new MitmBroker({token:'control',logger:()=>{},drive:async job=>{
     const ctl=async(route,data)=>fetch(`http://127.0.0.1:${broker.server.address().port}${route}`,{method:'POST',headers:{authorization:'Bearer control'},body:JSON.stringify(data)})
     const claim=await ctl('/claim',{ticket:job.ticket,envelope:{model:'fixture',request:{contents:[{role:'user',parts:[{text:job.marker}]}]}}})
@@ -71,72 +71,15 @@ test('a repeated undeclared tool error is returned and both proxy events are set
     const packet={response:{candidates:[{content:{parts:[{functionCall:{name:'unknown_tool',args:{}}}]},finishReason:'STOP'}]}}
     await ctl('/event',{ticket:job.ticket,kind:'chunk',data:Buffer.from('data: '+JSON.stringify(packet)+'\n\n').toString('base64')})
     const end=await ctl('/event',{ticket:job.ticket,kind:'end'})
-    endResults.push([end.status,await end.json()])
+    endResult=[end.status,await end.json()]
   }})
   await broker.listen();t.after(()=>broker.close())
   const body={model:'fixture',system:'You are an AI agent powered by DeepSeek Harness.',messages:[{role:'user',content:'hello'}],tools:[{name:'allowed',input_schema:{type:'object'}}]}
   const response=await broker.fetch('/v1/messages',{body:JSON.stringify(body)})
   assert.equal(response.status,502)
   assert.match((await response.json()).error.message,/undeclared tool "unknown_tool"/)
-  while(endResults.length<2)await new Promise(resolve=>setTimeout(resolve,1))
-  assert.deepEqual(endResults,[[200,{ok:true,retry:true}],[200,{ok:true,adapter_error:true}]])
-})
-
-test('an undeclared tool is retried once before streaming content starts', async t => {
-  let attempts=0
-  const broker=new MitmBroker({token:'control',logger:()=>{},drive:async job=>{
-    const ctl=async(route,data)=>fetch(`http://127.0.0.1:${broker.server.address().port}${route}`,{method:'POST',headers:{authorization:'Bearer control'},body:JSON.stringify(data)})
-    attempts++
-    assert.equal((await ctl('/claim',{ticket:job.ticket,envelope:{model:'fixture',request:{contents:[{role:'user',parts:[{text:job.marker}]}]}}})).status,200)
-    await ctl('/event',{ticket:job.ticket,kind:'headers',status:200})
-    const packet={response:{candidates:[{content:{parts:[{functionCall:{name:attempts===1?'unknown_tool':'allowed',args:{}}}]},finishReason:'STOP'}]}}
-    await ctl('/event',{ticket:job.ticket,kind:'chunk',data:Buffer.from('data: '+JSON.stringify(packet)+'\n\n').toString('base64')})
-    assert.equal((await ctl('/event',{ticket:job.ticket,kind:'end'})).status,200)
-  }})
-  await broker.listen();t.after(()=>broker.close())
-  const body={model:'fixture',system:'You are an AI agent powered by DeepSeek Harness.',messages:[{role:'user',content:'hello'}],tools:[{name:'allowed',input_schema:{type:'object'}}],stream:true}
-  const response=await broker.fetch('/v1/messages',{body:JSON.stringify(body)})
-  const stream=await response.text()
-  assert.equal(attempts,2)
-  assert.equal((stream.match(/event: message_start/g)||[]).length,1)
-  assert.match(stream,/"name":"allowed"/)
-  assert.doesNotMatch(stream,/unknown_tool|event: error/)
-})
-
-test('an undeclared tool is not retried after streaming content', async t => {
-  let attempts=0
-  const broker=new MitmBroker({token:'control',logger:()=>{},drive:async job=>{
-    const ctl=async(route,data)=>fetch(`http://127.0.0.1:${broker.server.address().port}${route}`,{method:'POST',headers:{authorization:'Bearer control'},body:JSON.stringify(data)})
-    attempts++
-    await ctl('/claim',{ticket:job.ticket,envelope:{model:'fixture',request:{contents:[{role:'user',parts:[{text:job.marker}]}]}}})
-    await ctl('/event',{ticket:job.ticket,kind:'headers',status:200})
-    const packet={response:{candidates:[{content:{parts:[{text:'visible'},{functionCall:{name:'unknown_tool',args:{}}}]},finishReason:'STOP'}]}}
-    await ctl('/event',{ticket:job.ticket,kind:'chunk',data:Buffer.from('data: '+JSON.stringify(packet)+'\n\n').toString('base64')})
-    assert.deepEqual(await (await ctl('/event',{ticket:job.ticket,kind:'end'})).json(),{ok:true,adapter_error:true})
-  }})
-  await broker.listen();t.after(()=>broker.close())
-  const body={model:'fixture',system:'You are an AI agent powered by DeepSeek Harness.',messages:[{role:'user',content:'hello'}],tools:[{name:'allowed',input_schema:{type:'object'}}],stream:true}
-  const stream=await (await broker.fetch('/v1/messages',{body:JSON.stringify(body)})).text()
-  assert.equal(attempts,1)
-  assert.match(stream,/visible/);assert.match(stream,/event: error/)
-})
-
-test('an upstream 429 after an automatic retry is returned without another attempt', async t => {
-  let attempts=0
-  const broker=new MitmBroker({token:'control',logger:()=>{},drive:async job=>{
-    const ctl=async(route,data)=>fetch(`http://127.0.0.1:${broker.server.address().port}${route}`,{method:'POST',headers:{authorization:'Bearer control'},body:JSON.stringify(data)})
-    attempts++
-    await ctl('/claim',{ticket:job.ticket,envelope:{model:'fixture',request:{contents:[{role:'user',parts:[{text:job.marker}]}]}}})
-    if(attempts===2){await ctl('/event',{ticket:job.ticket,kind:'headers',status:429});return}
-    await ctl('/event',{ticket:job.ticket,kind:'headers',status:200})
-    const packet={response:{candidates:[{content:{parts:[{functionCall:{name:'unknown_tool',args:{}}}]},finishReason:'STOP'}]}}
-    await ctl('/event',{ticket:job.ticket,kind:'chunk',data:Buffer.from('data: '+JSON.stringify(packet)+'\n\n').toString('base64')})
-    await ctl('/event',{ticket:job.ticket,kind:'end'})
-  }})
-  await broker.listen();t.after(()=>broker.close())
-  const body={model:'fixture',system:'You are an AI agent powered by DeepSeek Harness.',messages:[{role:'user',content:'hello'}],tools:[{name:'allowed',input_schema:{type:'object'}}]}
-  const response=await broker.fetch('/v1/messages',{body:JSON.stringify(body)})
-  assert.equal(response.status,429);assert.equal(attempts,2)
+  while(!endResult)await new Promise(resolve=>setTimeout(resolve,1))
+  assert.deepEqual(endResult,[200,{ok:true,adapter_error:true}])
 })
 
 test('complete tool calls accept empty partialArgs but reject actual partial arguments', () => {
