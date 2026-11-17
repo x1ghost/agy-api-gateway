@@ -104,7 +104,15 @@ export class MitmBroker {
         else if(input.kind==='end')job.end()
         else if(input.kind==='error')job.abort(fail('MITM transport failed',502))
         else throw fail('Unknown event')
-      } catch(e){job.abort(e);throw e}
+      } catch(e){
+        job.abort(e)
+        // A complete upstream response can fail our response adapter (for
+        // example, an unknown tool). The client has received the error and
+        // the proxy must settle this known response rather than treat it as an
+        // uncertain transport failure and block subsequent requests.
+        if(input.kind==='end' && job.status===200){res.writeHead(200,{'content-type':'application/json'}).end('{"ok":true,"adapter_error":true}');return}
+        throw e
+      }
       res.writeHead(200,{'content-type':'application/json'}).end('{"ok":true}')
     }catch(e){res.writeHead(e.status||500,{'content-type':'application/json'}).end(JSON.stringify({error:e.message,...(e.code?{code:e.code}:{})}))}
   }
