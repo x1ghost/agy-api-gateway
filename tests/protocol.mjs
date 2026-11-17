@@ -57,7 +57,8 @@ test('undeclared tool errors identify valid names without echoing arbitrary outp
     return ()=>t.finish()
   }
   assert.throws(invoke('unknown_tool'),/undeclared tool "unknown_tool"/)
-  assert.throws(invoke('arbitrary output with spaces'),e=>e.message==='Upstream called an undeclared tool')
+  assert.throws(invoke('arbitrary output with spaces'),e=>e.message==='Upstream called an undeclared tool (name invalid; fields: args,name)')
+  assert.throws(invoke(undefined),e=>e.message==='Upstream called an undeclared tool (name missing; fields: args)')
 })
 
 test('a completed upstream response with an undeclared tool settles the proxy event', async t => {

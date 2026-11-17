@@ -368,10 +368,11 @@ export class WireTurn {
     for(const p of calls) {
       const f=p.functionCall
       if(!this.body.tools?.some(t=>t.name===f.name)) {
-        // Include only a valid tool identifier in the caller's error; never
-        // echo arbitrary model output or tool arguments into diagnostics.
+        // Do not echo arbitrary model output or tool arguments. Shape metadata
+        // distinguishes a missing name or a fragmented call from a mismatch.
         const name=typeof f.name==='string'&&/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(f.name)?` "${f.name}"`:''
-        throw fail(`Upstream called an undeclared tool${name}`,502)
+        const shape=name?'':` (name ${f.name===undefined?'missing':typeof f.name==='string'?'invalid':'not a string'}; fields: ${Object.keys(f).filter(k=>/^[A-Za-z][A-Za-z0-9_]{0,31}$/.test(k)).sort().join(',')||'none'})`
+        throw fail(`Upstream called an undeclared tool${name}${shape}`,502)
       }
       if((f.partialArgs!==undefined && (!Array.isArray(f.partialArgs)||f.partialArgs.length>0)) || f.willContinue)throw fail('Upstream streamed tool arguments are unsupported',502)
       if(!object(f.args))throw fail('Upstream tool call omitted or returned invalid arguments',502)
