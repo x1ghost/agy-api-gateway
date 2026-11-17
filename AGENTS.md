@@ -31,7 +31,7 @@ The portable launcher has passed a real AGY 1.5.9 tool-call and tool-result roun
 
 ## Investigation priorities
 
-Treat upstream HTTP 429 (rate limits/quota) and 403 (access/refusal) as the highest-priority operational issues. Use gateway diagnostics and official AGY CLI behavior to identify the upstream cause, affected models, and whether other requests are impacted. Issue #5 (small output limits versus thinking budgets) is lower priority.
+Treat upstream HTTP 429 (rate limits/quota) and 403 (access/refusal) as the highest-priority operational issues. Use gateway diagnostics and official AGY CLI behavior to identify the upstream cause, affected models, and whether other requests are impacted. Small output limits versus thinking budgets are lower priority.
 
 ## Run
 
