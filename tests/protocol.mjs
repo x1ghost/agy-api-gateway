@@ -6,8 +6,18 @@ import path from 'node:path'
 import { once } from 'node:events'
 import { MitmBroker } from '../packages/agy-cli/mitm/broker.mjs'
 import { WireStore, projectCc } from '../packages/agy-cli/mitm/protocol.mjs'
-import { AGY_NATIVE_SECURITY, KNOWN_REFUSED_SYSTEM_HASHES, systemFingerprint, assertForwardableSystem } from '../packages/agy-cli/mitm/system-policy.mjs'
+import { AGY_IDENTITY, AGY_NATIVE_SECURITY, KNOWN_REFUSED_SYSTEM_HASHES, systemFingerprint, assertForwardableSystem } from '../packages/agy-cli/mitm/system-policy.mjs'
 import { createCcServer } from '../packages/agy-cli/cc-http.mjs'
+
+test('DSH system identity is replaced without changing surrounding instructions or user text', () => {
+  const identity = 'You are an AI agent powered by DeepSeek Harness.'
+  const request = {model:'fixture', system:`${identity}\nKeep the configured tools.`, messages:[{role:'user',content:identity}]}
+  const projected = projectCc(request, new WireStore())
+  assert.equal(projected.systemInstruction.parts[0].text, `${AGY_IDENTITY}\nKeep the configured tools.`)
+  assert.equal(projected.contents[0].parts[0].text, identity)
+  const other = projectCc({...request, system:`Explain: ${identity}`}, new WireStore())
+  assert.equal(other.systemInstruction.parts[0].text, `Explain: ${identity}`)
+})
 
 test('default safety substitution reaches the model while user and tool text remain intact', () => {
   const paragraph = 'Synthetic security instruction.', hash = systemFingerprint(paragraph)

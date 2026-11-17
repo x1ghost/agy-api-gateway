@@ -7,6 +7,7 @@ export const AGY_IDENTITY = 'You are Antigravity, a powerful agentic AI assistan
 export const AGY_NATIVE_SECURITY = 'Never defeat or bypass an access control, permission check, credential requirement, network/proxy restriction, or sandbox/environment boundary - including writing to the state or processes such a check reads, spoofing identity, intercepting the check, probing undocumented local/host services, or modifying host, harness, or test infrastructure outside your task scope. Use documented, sanctioned paths only; if none of them work, you are blocked - report the error and stop.'
 const SDK_BILLING = /^x\s*[-_]\s*(?:anthropic|antigravity|anti\s+gravity)\s*[-_]\s*billing\s*[-_]\s*header\s*:/i
 function isClientIdentity(line) {
+  if (/^you are an ai agent powered by deepseek harness\.$/i.test(line)) return true
   if(!/^you(?:\s+are|'re)\s+/i.test(line)) return false
   const client='(?:claude|antigravity|anti\\s+gravity)'
   const code=new RegExp(`\\b${client}\\s+code\\b`,'i').test(line) && /\bofficial\b/i.test(line) && /\bcli\b/i.test(line)
