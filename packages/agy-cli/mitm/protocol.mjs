@@ -182,7 +182,13 @@ function thinkingDisplay(body) {
   if(value===undefined)return null
   if(!object(value))throw fail('Invalid thinking configuration')
   if(value.type==='disabled'&&Object.keys(value).every(k=>k==='type'))return null
-  if(value.type!=='adaptive')throw fail('Use adaptive thinking with output_config.effort; a numeric Anthropic thinking budget cannot be preserved by this AGY adapter')
+  if(value.type==='enabled') {
+    if(Object.keys(value).some(k=>!['type','budget_tokens','display'].includes(k))||!Number.isInteger(value.budget_tokens)||value.budget_tokens<1||value.display!==undefined&&!['omitted','summarized','updates'].includes(value.display))throw fail('Invalid numeric thinking configuration')
+    // AGY chooses its own thinking configuration; the Anthropic token budget
+    // has no portable equivalent for newer Gemini models.
+    return value.display||'summarized'
+  }
+  if(value.type!=='adaptive')throw fail('Unsupported thinking configuration')
   if(Object.keys(value).some(k=>!['type','display'].includes(k))||value.display!==undefined&&!['omitted','summarized','updates'].includes(value.display))throw fail('Unsupported adaptive thinking configuration')
   return value.display||'omitted'
 }

@@ -4,8 +4,16 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { MitmBroker } from '../packages/agy-cli/mitm/broker.mjs'
-import { WireStore, WireTurn, projectCc } from '../packages/agy-cli/mitm/protocol.mjs'
+import { WireStore, WireTurn, projectCc, replaceRequest } from '../packages/agy-cli/mitm/protocol.mjs'
 import { AGY_IDENTITY, AGY_NATIVE_SECURITY, KNOWN_REFUSED_SYSTEM_HASHES, systemFingerprint, assertForwardableSystem, assertSupportedClient } from '../packages/agy-cli/mitm/system-policy.mjs'
+
+test('numeric thinking budget is ignored while preserving AGY thinking and requested display', () => {
+  const body={model:'gemini-4-argon-high',messages:[{role:'user',content:'hello'}],thinking:{type:'enabled',budget_tokens:4096,display:'summarized'}}
+  const envelope={model:body.model,request:{generationConfig:{thinkingConfig:{thinkingLevel:'HIGH'}}}}
+  const result=replaceRequest(envelope,body,new WireStore())
+  assert.deepEqual(result.request.generationConfig.thinkingConfig,{thinkingLevel:'HIGH',includeThoughts:true})
+  assert.throws(()=>projectCc({...body,thinking:{type:'enabled',budget_tokens:'bad'}},new WireStore()),/Invalid numeric thinking/)
+})
 
 test('client identity is required in system instructions before forwarding', async () => {
   const cc="You are Claude Code, Anthropic's official CLI for Claude."
