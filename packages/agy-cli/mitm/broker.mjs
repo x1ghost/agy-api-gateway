@@ -21,7 +21,7 @@ function upstreamFailure(status, encoded, retryAfter) {
 const cancelled=message=>Object.assign(fail(message,409),{cancelled:true})
 const sse=(name,value)=>new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(value)}\n\n`)
 export class MitmBroker {
-  constructor({token,storeDir,drive,preflight,timeoutMs=120000,logger=row=>{if(process.env.AGY_DIAGNOSTICS!=='0')process.stderr.write('agy_request '+JSON.stringify(row)+'\n')}}) { if(!token)throw Error('Control token required');this.token=token;this.store=new WireStore(storeDir);this.drive=drive;this.preflight=preflight;this.timeoutMs=timeoutMs;this.logger=logger;this.jobs=new Map();this.terminal=new Map();this.server=http.createServer((q,s)=>this.control(q,s)) }
+  constructor({token,storeDir,drive,preflight,timeoutMs=600000,logger=row=>{if(process.env.AGY_DIAGNOSTICS!=='0')process.stderr.write('agy_request '+JSON.stringify(row)+'\n')}}) { if(!token)throw Error('Control token required');this.token=token;this.store=new WireStore(storeDir);this.drive=drive;this.preflight=preflight;this.timeoutMs=timeoutMs;this.logger=logger;this.jobs=new Map();this.terminal=new Map();this.server=http.createServer((q,s)=>this.control(q,s)) }
   remember(ticket,state){this.terminal.set(ticket,{state,at:Date.now()});this.prune()}
   prune(){for(const [ticket,row] of this.terminal)if(Date.now()-row.at>600000)this.terminal.delete(ticket);while(this.terminal.size>1024)this.terminal.delete(this.terminal.keys().next().value)}
   async listen() { await new Promise(r=>this.server.listen(0,'127.0.0.1',r));return this.server.address().port }

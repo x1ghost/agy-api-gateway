@@ -64,7 +64,7 @@ export class CliCarrier {
         saved.model=job.body.model
       }
       if(job.done)return
-      const result=await this.request('session/prompt',{sessionId,prompt:[{type:'text',text:job.marker+'\nReply only AGY_CC_CARRIER_ACK. Do not call tools.'}]},125000,controller.signal)
+      const result=await this.request('session/prompt',{sessionId,prompt:[{type:'text',text:job.marker+'\nReply only AGY_CC_CARRIER_ACK. Do not call tools.'}]},605000,controller.signal)
       if(controller.signal.aborted)return
       if(turn.invalid||turn.text.trim()!=='AGY_CC_CARRIER_ACK'||result?.stopReason!=='end_turn')throw fail('Official CLI carrier did not acknowledge the intercepted turn',502)
       completed=true;this.stats.acks++;this.recordStats()
