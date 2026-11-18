@@ -37,3 +37,27 @@ test('Magpie supplies account, session and subagent identities to the provider',
  assert.equal(onProvider(JSON.parse(body),{provider:{id:'other'},agent:'dsh'}),undefined)
  const other={headers:{}};await hooks['chat.headers']({model:{providerID:'other'},sessionID:'no'},other);assert.deepEqual(other.headers,{})
 })
+
+test('disconnect during shared runtime startup returns without forwarding', {timeout:1500}, async t=>{
+ const home=fs.mkdtempSync(path.join(os.tmpdir(),'magpie-agy-start-'))
+ t.after(()=>fs.rmSync(home,{recursive:true,force:true}))
+ let finishStartup,starting
+ const requested=new Promise(resolve=>{starting=resolve})
+ const runtime=new Promise(resolve=>{finishStartup=resolve})
+ const hooks=await AgyMagpiePlugin({}, {runtimeFor:()=>{starting();return runtime}})
+ const loaded=await hooks.auth.loader(async()=>({key:home}))
+ const controller=new AbortController()
+ const response=loaded.fetch('agy://local/v1/messages',{
+  method:'POST',headers:{'x-magpie-session':'synthetic'},signal:controller.signal,
+  body:JSON.stringify({model:'fixture',messages:[{role:'user',content:'synthetic'}]}),
+ })
+ await requested
+ controller.abort()
+ const result=await response
+ assert.equal(result.status,499)
+ assert.ok(result.headers.get('request-id'))
+ let forwarded=0
+ finishStartup({broker:{fetch:async()=>{forwarded++}}})
+ await new Promise(resolve=>setImmediate(resolve))
+ assert.equal(forwarded,0)
+})

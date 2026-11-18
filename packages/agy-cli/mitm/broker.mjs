@@ -1,8 +1,10 @@
 import http from 'node:http'
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
-import { AGY_NATIVE_SECURITY, assertSupportedClient, isDshUserAgent } from './system-policy.mjs'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { assertSupportedClient, isDshUserAgent } from './system-policy.mjs'
 import { WireStore, WireTurn, projectCc, replaceRequest, fail } from './protocol.mjs'
-const errorResponse=e=>Response.json({type:'error',error:{type:e.status===429?'rate_limit_error':'invalid_request_error',message:e.message,...(e.upstreamError?{upstream_error:e.upstreamError}:{})}},{status:e.status||502,headers:{'x-should-retry':'false',...(e.retryAfter?{'retry-after':e.retryAfter}:{})}})
+import { logRequest, requestTiming } from './request.mjs'
+
+const errorResponse=(e,id)=>Response.json({type:'error',error:{type:e.status===429?'rate_limit_error':'invalid_request_error',message:e.message,...(e.upstreamError?{upstream_error:e.upstreamError}:{})}},{status:e.status||502,headers:{'request-id':id,'x-should-retry':'false',...(e.retryAfter?{'retry-after':e.retryAfter}:{})}})
 function upstreamFailure(status, encoded, retryAfter) {
   const e=fail(`Official AGY upstream HTTP ${status}`,status>=400&&status<=599?status:502)
   if(typeof encoded==='string' && encoded.length<=24000) {
@@ -18,10 +20,10 @@ function upstreamFailure(status, encoded, retryAfter) {
   if(typeof retryAfter==='string' && retryAfter.length<=128 && /^[\x20-\x7e]+$/.test(retryAfter))e.retryAfter=retryAfter
   return e
 }
-const cancelled=message=>Object.assign(fail(message,409),{cancelled:true})
+const cancelled=(message,status=409)=>Object.assign(fail(message,status),{cancelled:true})
 const sse=(name,value)=>new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(value)}\n\n`)
 export class MitmBroker {
-  constructor({token,storeDir,drive,preflight,timeoutMs=600000,logger=row=>{if(process.env.AGY_DIAGNOSTICS!=='0')process.stderr.write('agy_request '+JSON.stringify(row)+'\n')}}) { if(!token)throw Error('Control token required');this.token=token;this.store=new WireStore(storeDir);this.drive=drive;this.preflight=preflight;this.timeoutMs=timeoutMs;this.logger=logger;this.jobs=new Map();this.terminal=new Map();this.server=http.createServer((q,s)=>this.control(q,s)) }
+  constructor({token,storeDir,drive,preflight,timeoutMs=600000,logger=logRequest}) { if(!token)throw Error('Control token required');this.token=token;this.store=new WireStore(storeDir);this.drive=drive;this.preflight=preflight;this.timeoutMs=timeoutMs;this.logger=logger;this.jobs=new Map();this.terminal=new Map();this.server=http.createServer((q,s)=>this.control(q,s)) }
   remember(ticket,state){this.terminal.set(ticket,{state,at:Date.now()});this.prune()}
   prune(){for(const [ticket,row] of this.terminal)if(Date.now()-row.at>600000)this.terminal.delete(ticket);while(this.terminal.size>1024)this.terminal.delete(this.terminal.keys().next().value)}
   async listen() { await new Promise(r=>this.server.listen(0,'127.0.0.1',r));return this.server.address().port }
@@ -29,49 +31,83 @@ export class MitmBroker {
   resolveMessage=messageId=>{for(const j of this.jobs.values())if(!j.done&&j.turn?.id===messageId)return j.httpRequestId}
   cancelSession=async scope=>{for(const j of this.jobs.values())if(j.scope===scope)j.abort(cancelled('CC cancelled'))}
   fetch=async (url,options)=>{
-    if(url.endsWith('/count_tokens'))return errorResponse(fail('Exact token counting is not implemented',400))
-    let body,projected
-    const started=Date.now()
+    const timing=options.timing??requestTiming(options.requestId)
+    const disconnect=()=>options.signal?.reason?.code==='CC_CANCELLED'?cancelled('CC generation cancelled'):cancelled('Client disconnected',499)
+    let body
     const dsh=isDshUserAgent(options.userAgent)
-    try {body=JSON.parse(options.body);assertSupportedClient(body,options.userAgent);projected=projectCc(body,this.store,{dsh});this.preflight?.(projected)}catch(e){return errorResponse(e)}
-    const system=JSON.stringify(projected.systemInstruction.parts), systemText=projected.systemInstruction.parts.map(p=>p.text).join('\n')
-    const diagnostic={request_id:options.requestId,model:/^[A-Za-z0-9._/-]{1,160}$/.test(body.model)?body.model:'<invalid>',system_sha256:createHash('sha256').update(system).digest('hex'),system_bytes:Buffer.byteLength(system),native_safety_blocks:systemText.split(AGY_NATIVE_SECURITY).length-1,messages:body.messages.length,tools:(body.tools||[]).length,max_tokens:body.max_tokens??null,thinking:body.thinking?.type??null}
-    let logged=false
-    const log=(status,origin,usage)=>{
-      if(logged)return;logged=true
-      try {this.logger({event:'generation',time:new Date().toISOString(),...diagnostic,status,origin,duration_ms:Date.now()-started,...(usage?{usage}: {})})} catch {} // Diagnostics never block model delivery.
+    timing.mark('preflight')
+    try {
+      if(options.signal?.aborted)throw disconnect()
+      if(url.endsWith('/count_tokens'))throw fail('Exact token counting is not implemented',400)
+      body=JSON.parse(options.body)
+      assertSupportedClient(body,options.userAgent)
+      const projected=projectCc(body,this.store,{dsh})
+      this.preflight?.(projected)
+    }catch(e){
+      timing.finish(this.logger,e.status||502,e.cancelled?'cancelled':'preflight_error')
+      return errorResponse(e,timing.id)
     }
-    const ticket=randomUUID().replaceAll('-','');let resolveResponse,resolveCompletion,stream,controller
-    const completion=new Promise(r=>{resolveCompletion=r})
+    const ticket=randomUUID().replaceAll('-',''), cancellation=new AbortController()
+    const responseHeaders={'request-id':timing.id}
+    let resolveResponse,stream,controller
     const response=new Promise(r=>{resolveResponse=r})
-    if(body.stream)stream=new ReadableStream({start(c){controller=c}})
-    const job={ticket,httpRequestId:options.requestId,marker:`AGY_CC_CARRIER_${ticket}`,scope:body.metadata?.user_id,body,dsh,claimed:false,done:false,responseStarted:false,status:null,
-      emit:(name,data)=>{if(body.stream&&!job.done)controller.enqueue(sse(name,data))},
+    if(body.stream)stream=new ReadableStream({
+      start(c){controller=c},
+      cancel(){job.abort(disconnect(),'cancelled',true)},
+    })
+    const settle=(state,status,outcome)=>{
+      job.done=true
+      this.remember(ticket,state)
+      this.jobs.delete(ticket)
+      clearTimeout(job.timer)
+      options.signal?.removeEventListener('abort',abort)
+      timing.finish(this.logger,status,outcome,job.status)
+    }
+    const job={ticket,httpRequestId:timing.id,marker:`AGY_CC_CARRIER_${ticket}`,scope:body.metadata?.user_id,body,dsh,claimed:false,done:false,responseStarted:false,status:null,signal:cancellation.signal,timing,
+      recordCancellation:(outcome,waitMs)=>{
+        try {this.logger({event:'acp_cancellation',time:new Date().toISOString(),request_id:timing.id,outcome,wait_ms:waitMs})} catch {}
+      },
+      emit:(name,data)=>{
+        if(name==='content_block_delta'&&data.delta.type==='text_delta')timing.mark('first_text')
+        if(name==='content_block_start'&&data.content_block.type==='tool_use')timing.mark('first_tool')
+        if(body.stream&&!job.done)controller.enqueue(sse(name,data))
+      },
       headers:(status,errorBody,retryAfter)=>{
         if(job.status!==null)throw fail('Duplicate upstream headers',409)
         job.status=status
-        if(status!==200){job.abort(upstreamFailure(status,errorBody,retryAfter));return}
-        job.turn=new WireTurn(body,this.store,job.emit)
-        if(body.stream){job.responseStarted=true;resolveResponse(new Response(stream,{headers:{'content-type':'text/event-stream'}}));job.turn.start()}
+        timing.mark('upstream_headers')
+        if(status!==200){job.abort(upstreamFailure(status,errorBody,retryAfter),'upstream_error');return}
+        job.turn=new WireTurn(body,this.store,job.emit,()=>timing.mark('first_upstream_sse'))
+        if(body.stream){job.responseStarted=true;resolveResponse(new Response(stream,{headers:{...responseHeaders,'content-type':'text/event-stream'}}));job.turn.start()}
       },
-      chunk:bytes=>{if(job.status!==200||!job.turn)throw fail('Chunk before successful headers',409);job.turn.push(bytes)},
+      chunk:bytes=>{
+        if(job.status!==200||!job.turn)throw fail('Chunk before successful headers',409)
+        timing.mark('first_upstream_byte')
+        job.turn.push(bytes)
+      },
       end:()=>{
         if(!job.turn)throw fail('End before headers',409)
-        const result=job.turn.finish();log(200,'upstream',result.usage);job.done=true;this.remember(ticket,'complete');clearTimeout(job.timer);resolveCompletion()
-        if(body.stream)controller.close();else resolveResponse(Response.json(result))
+        timing.mark('upstream_end')
+        const result=job.turn.finish()
+        settle('complete',200,'success')
+        if(body.stream)controller.close();else resolveResponse(Response.json(result,{headers:responseHeaders}))
       },
-      abort:e=>{
+      abort:(e,outcome=e.cancelled?'cancelled':'carrier_error',streamCancelled=false)=>{
         if(job.done)return
-        log(e.status||502,job.status!==null?'upstream':'gateway')
-        if(job.responseStarted){job.emit('error',{type:'error',error:{type:e.status===429?'rate_limit_error':'api_error',message:e.message}});controller.close()}
-        else resolveResponse(errorResponse(e))
-        job.done=true;this.remember(ticket,e.cancelled?'cancelled':'failed');clearTimeout(job.timer);resolveCompletion();job.cancel?.()
+        settle(e.cancelled?'cancelled':'failed',e.status||502,outcome)
+        cancellation.abort(e)
+        if(!job.responseStarted)resolveResponse(errorResponse(e,timing.id))
+        else if(!streamCancelled){
+          controller.enqueue(sse('error',{type:'error',error:{type:e.status===429?'rate_limit_error':'api_error',message:e.message}}))
+          controller.close()
+        }
       },
     }
-    job.timer=setTimeout(()=>job.abort(fail('MITM carrier timed out',504)),this.timeoutMs)
-    const abort=()=>job.abort(options.signal?.reason?.code==='CC_CANCELLED'?cancelled('CC generation cancelled'):fail('CC transport aborted unexpectedly',502));options.signal?.addEventListener('abort',abort,{once:true})
+    job.timer=setTimeout(()=>job.abort(fail('MITM carrier timed out',504),'timeout'),this.timeoutMs)
+    const abort=()=>job.abort(disconnect())
+    options.signal?.addEventListener('abort',abort,{once:true})
     this.jobs.set(ticket,job)
-    Promise.resolve().then(()=>{if(options.signal?.aborted){abort();return}return this.drive(job)}).then(()=>completion).catch(e=>job.abort(e)).finally(()=>{this.jobs.delete(ticket);clearTimeout(job.timer);options.signal?.removeEventListener('abort',abort)})
+    Promise.resolve().then(()=>{if(!job.done)return this.drive(job)}).catch(e=>job.abort(e))
     return response
   }
   async control(req,res) {
@@ -95,6 +131,7 @@ export class MitmBroker {
         if(job.claimed)throw fail('A ticket can forward only once; no CLI retry',409)
         if(!JSON.stringify(input.envelope.request?.contents||[]).includes(job.marker))throw fail('Carrier marker missing',409)
         const payload=replaceRequest(input.envelope,job.body,this.store,{dsh:job.dsh});job.claimed=true
+        job.timing.mark('claimed')
         res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({payload}));return
       }
       if(req.url!=='/event'||!job.claimed)throw fail('Unclaimed or unknown control event',409)
@@ -102,10 +139,10 @@ export class MitmBroker {
         if(input.kind==='headers')job.headers(input.status,input.error_body,input.retry_after)
         else if(input.kind==='chunk')job.chunk(Buffer.from(input.data,'base64'))
         else if(input.kind==='end')job.end()
-        else if(input.kind==='error')job.abort(fail('MITM transport failed',502))
+        else if(input.kind==='error')job.abort(fail('MITM transport failed',502),'transport_error')
         else throw fail('Unknown event')
       } catch(e){
-        job.abort(e)
+        job.abort(e,'adapter_error')
         // A complete upstream response can fail our response adapter (for
         // example, an unknown tool). The client has received the error and
         // the proxy must settle this known response rather than treat it as an

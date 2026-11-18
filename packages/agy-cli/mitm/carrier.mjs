@@ -2,74 +2,111 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fail } from './protocol.mjs'
+import { waitForSignal } from './request.mjs'
+
+class TurnQueue {
+  constructor(limit) {
+    this.limit=limit
+    this.active=0
+    this.waiters=new Set()
+  }
+  async enter(signal) {
+    signal.throwIfAborted()
+    if(this.active<this.limit){this.active++;return}
+    await new Promise((resolve,reject)=>{
+      const ready=()=>{
+        signal.removeEventListener('abort',abort)
+        resolve()
+      }
+      const abort=()=>{
+        this.waiters.delete(ready)
+        reject(signal.reason)
+      }
+      this.waiters.add(ready)
+      signal.addEventListener('abort',abort,{once:true})
+    })
+  }
+  leave() {
+    const next=this.waiters.values().next().value
+    if(!next){this.active--;return}
+    this.waiters.delete(next)
+    next()
+  }
+}
 
 // One official CLI process hosts independent ACP sessions. The proxy replaces
 // each marked request and the CLI receives only the carrier ACK.
 export class CliCarrier {
-  constructor({agy,workspace,env}) {
+  constructor({agy,workspace,env,cancelTimeoutMs=5000}) {
     this.agy=agy;this.workspace=workspace;this.env=env
     this.limit=Number(env.AGY_ACP_CONCURRENCY||8)
     if(!Number.isInteger(this.limit)||this.limit<1||this.limit>64)throw Error('AGY_ACP_CONCURRENCY must be between 1 and 64')
+    this.cancelTimeoutMs=cancelTimeoutMs
     this.child=null;this.ready=false;this.starting=null;this.retired=Promise.resolve();this.epoch=0
-    this.pending=new Map();this.sessions=new Map();this.reusedSessions=new Map();this.scopeQueues=new Map();this.nextId=0;this.active=0;this.waiters=[];this.created=0
+    this.pending=new Map();this.sessions=new Map();this.reusedSessions=new Map();this.scopeQueues=new Map();this.nextId=0;this.queue=new TurnQueue(this.limit);this.created=0
     this.stats={starts:0,acks:0}
-  }
-  async enter(){
-    if(this.active<this.limit){this.active++;return}
-    await new Promise(resolve=>this.waiters.push(resolve))
-  }
-  leave(){
-    this.active--
-    if(this.waiters.length){this.active++;this.waiters.shift()()}
   }
   run=async job=>{
     // Serialize turns only within the same client scope, including the period
     // after the HTTP response has ended but before the CLI finishes its ACK.
     const key=typeof job.scope==='string'&&job.scope?job.scope:null
-    const previous=key?this.scopeQueues.get(key):null
-    let release
-    const queued=new Promise(resolve=>{release=resolve})
-    if(key)this.scopeQueues.set(key,queued)
+    const {signal,timing}=job
+    let scopeQueue,hasScopeSlot=false
+    if(key){
+      scopeQueue=this.scopeQueues.get(key)??new TurnQueue(1)
+      this.scopeQueues.set(key,scopeQueue)
+    }
     try {
-      if(previous)await previous
-      if(job.done)return
-      await this.enter()
-      try {if(!job.done)await this.turn(job,key)} finally {this.leave()}
+      if(scopeQueue){
+        timing?.mark('scope_queue')
+        await scopeQueue.enter(signal)
+        hasScopeSlot=true
+      }
+      timing?.mark('account_queue')
+      await this.queue.enter(signal)
+      try{
+        signal.throwIfAborted()
+        await this.turn(job,key)
+      } finally {this.queue.leave()}
     } finally {
-      release()
-      if(key&&this.scopeQueues.get(key)===queued)this.scopeQueues.delete(key)
+      if(hasScopeSlot)scopeQueue.leave()
+      if(scopeQueue?.active===0&&this.scopeQueues.get(key)===scopeQueue)this.scopeQueues.delete(key)
     }
   }
   async turn(job,key){
-    const controller=new AbortController();let sessionId
-    job.cancel=()=>{controller.abort();if(sessionId)this.notify('session/cancel',{sessionId})}
-    await this.ensure()
-    if(job.done)return
-    let saved=key?this.reusedSessions.get(key):undefined
-    sessionId=saved?.id
-    if(!sessionId){
-      const session=await this.request('session/new',{cwd:this.workspace,mcpServers:[]},45000,controller.signal)
-      sessionId=session?.sessionId
-      if(typeof sessionId!=='string'||!sessionId)throw fail('Official AGY did not create an ACP session',502)
-      this.created++
-      saved={id:sessionId,model:null}
-      if(key)this.reusedSessions.set(key,saved)
-    }
-    if(job.done){this.notify('session/cancel',{sessionId});if(key)this.reusedSessions.delete(key);return}
-    const turn={text:'',invalid:false};this.sessions.set(sessionId,turn)
+    const {signal,timing}=job
+    timing?.mark('acp_start')
+    await waitForSignal(this.ensure(),signal)
+    signal.throwIfAborted()
+    timing?.mark('acp_ready')
+    const child=this.child
+    let saved=key?this.reusedSessions.get(key):undefined,sessionId=saved?.id
     let completed=false
     try {
+      if(!sessionId){
+        timing?.mark('acp_session')
+        const session=await this.request('session/new',{cwd:this.workspace,mcpServers:[]},45000,signal)
+        sessionId=session?.sessionId
+        if(typeof sessionId!=='string'||!sessionId)throw fail('Official AGY did not create an ACP session',502)
+        signal.throwIfAborted()
+        this.created++
+        saved={id:sessionId,model:null}
+        if(key)this.reusedSessions.set(key,saved)
+      }
+      const turn={text:'',invalid:false};this.sessions.set(sessionId,turn)
       if(saved.model!==job.body.model){
-        await this.request('session/set_model',{sessionId,modelId:job.body.model},45000,controller.signal)
+        timing?.mark('acp_model')
+        await this.request('session/set_model',{sessionId,modelId:job.body.model},45000,signal)
         saved.model=job.body.model
       }
-      if(job.done)return
-      const result=await this.request('session/prompt',{sessionId,prompt:[{type:'text',text:job.marker+'\nReply only AGY_CC_CARRIER_ACK. Do not call tools.'}]},605000,controller.signal)
-      if(controller.signal.aborted)return
+      signal.throwIfAborted()
+      timing?.mark('acp_prompt')
+      const result=await this.request('session/prompt',{sessionId,prompt:[{type:'text',text:job.marker+'\nReply only AGY_CC_CARRIER_ACK. Do not call tools.'}]},605000,signal,job.recordCancellation)
+      signal.throwIfAborted()
       if(turn.invalid||turn.text.trim()!=='AGY_CC_CARRIER_ACK'||result?.stopReason!=='end_turn')throw fail('Official CLI carrier did not acknowledge the intercepted turn',502)
       completed=true;this.stats.acks++;this.recordStats()
     } finally {
-      this.sessions.delete(sessionId)
+      if(this.child===child&&sessionId)this.sessions.delete(sessionId)
       if(!completed&&key&&this.reusedSessions.get(key)===saved)this.reusedSessions.delete(key)
     }
   }
@@ -130,19 +167,31 @@ export class CliCarrier {
       this.write(result?{jsonrpc:'2.0',id:message.id,result}:{jsonrpc:'2.0',id:message.id,error:{code:-32601,message:'Unsupported carrier request'}})
     }
   }
-  request(method,params,timeout,signal){
+  request(method,params,timeout,signal,recordCancellation){
     if(!this.child||signal?.aborted)return Promise.reject(fail('Official CLI carrier retired',409))
     const id=++this.nextId
     return new Promise((resolve,reject)=>{
-      const finish=(error,value)=>{
+      let timer,cancelStarted
+      const finish=(error,value,outcome)=>{
         if(!this.pending.delete(id))return
         clearTimeout(timer);signal?.removeEventListener('abort',abort)
+        if(cancelStarted!==undefined){
+          const state=outcome??(value?.stopReason==='cancelled'?'confirmed':value?.stopReason?'ended':'unconfirmed')
+          recordCancellation?.(state,Math.round(performance.now()-cancelStarted))
+        }
         if(error)reject(error);else resolve(value)
       }
-      const abort=()=>finish(fail('Official CLI carrier cancelled',409))
-      const timer=setTimeout(()=>finish(fail(`Official AGY ACP ${method} timed out`,504)),timeout)
+      const abort=()=>{
+        if(method!=='session/prompt'){finish(fail('Official CLI carrier cancelled',409));return}
+        // Keep the original RPC pending: the cancellation notification has
+        // no reply of its own. The client response has already been settled.
+        cancelStarted=performance.now()
+        clearTimeout(timer)
+        timer=setTimeout(()=>finish(fail('Official AGY cancellation confirmation timed out',504),undefined,'timeout'),this.cancelTimeoutMs)
+        this.notify('session/cancel',{sessionId:params.sessionId})
+      }
+      timer=setTimeout(()=>finish(fail(`Official AGY ACP ${method} timed out`,504)),timeout)
       this.pending.set(id,{method,finish});signal?.addEventListener('abort',abort,{once:true})
-      if(signal?.aborted){abort();return}
       this.write({jsonrpc:'2.0',id,method,params})
     })
   }

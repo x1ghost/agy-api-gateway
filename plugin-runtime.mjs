@@ -70,7 +70,7 @@ async function start(home){
     const url=`http://127.0.0.1:${port}`
     const env={...base,AGY_ACP_CONCURRENCY:String(concurrency),HTTPS_PROXY:url,HTTP_PROXY:url,ALL_PROXY:url,https_proxy:url,http_proxy:url,all_proxy:url,NO_PROXY:'localhost,127.0.0.1',no_proxy:'localhost,127.0.0.1',SSL_CERT_FILE:trust,NODE_EXTRA_CA_CERTS:cert,REQUESTS_CA_BUNDLE:trust,GRPC_DEFAULT_SSL_ROOTS_FILE_PATH:trust}
     carrier=new CliCarrier({agy,workspace,env})
-    broker=new MitmBroker({token,storeDir:path.join(account,'wire'),drive:carrier.run,preflight:assertForwardableSystem,logger:()=>{}})
+    broker=new MitmBroker({token,storeDir:path.join(account,'wire'),drive:carrier.run,preflight:assertForwardableSystem})
     const controlPort=await broker.listen()
     fs.writeFileSync(path.join(state,'control.json'),JSON.stringify({port:controlPort,token}),{mode:0o600})
     const models=createModelProvider({agy,workspace,env})

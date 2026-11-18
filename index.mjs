@@ -1,11 +1,12 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { accountHome, runtimeFor } from './plugin-runtime.mjs'
+import { logRequest, requestTiming, waitForSignal } from './packages/agy-cli/mitm/request.mjs'
 
 const PROVIDER='claude-agy',SDK='@ai-sdk/anthropic',BASE='agy://local'
-const errors=(status,message)=>Response.json({type:'error',error:{type:status===400?'invalid_request_error':'api_error',message}},{status,headers:{'x-should-retry':'false'}})
+const errors=(status,message,requestId)=>Response.json({type:'error',error:{type:status===400?'invalid_request_error':'api_error',message}},{status,headers:{'x-should-retry':'false','request-id':requestId}})
 function chosenHome(value){
   const input=typeof value==='string'&&value.trim()?value.trim():os.homedir()
   return accountHome({key:input==='~'?os.homedir():input.startsWith('~/')?path.join(os.homedir(),input.slice(2)):input})
@@ -35,21 +36,34 @@ export async function AgyMagpiePlugin(_input,options={}){
       async loader(getAuth){
         const home=accountHome(await getAuth())
         return {baseURL:BASE,apiKey:'agy',async fetch(input,init={}){
+          const timing=requestTiming()
+          const reject=(status,message,outcome='preflight_error')=>{
+            timing.finish(logRequest,status,outcome)
+            return errors(status,message,timing.id)
+          }
           const request=new Request(input,init),headers=request.headers
+          const disconnect=()=>reject(499,'Client disconnected','cancelled')
+          if(request.signal.aborted)return disconnect()
           const session=headers.get('x-magpie-session')||headers.get('x-agy-magpie-conversation')
-          if(!session)return errors(400,'Magpie did not supply a session identity')
+          if(!session)return reject(400,'Magpie did not supply a session identity')
           const subagent=headers.get('x-magpie-subagent')||''
           const scope=createHash('sha256').update(JSON.stringify([session,subagent])).digest('hex')
           let body
-          try{body=await request.json()}catch{return errors(400,'Invalid JSON body')}
-          if(!body||typeof body!=='object'||!Array.isArray(body.messages)||typeof body.model!=='string')return errors(400,'A model and messages are required')
+          try{body=await request.json()}catch{return request.signal.aborted?disconnect():reject(400,'Invalid JSON body')}
+          if(!body||typeof body!=='object'||!Array.isArray(body.messages)||typeof body.model!=='string')return reject(400,'A model and messages are required')
           const agent=body.metadata?.__agy_magpie_agent
           body.metadata={...body.metadata,user_id:scope}
           delete body.metadata.__agy_magpie_agent
           try{
-            const runtime=await getRuntime(home)
-            return await runtime.broker.fetch(request.url,{body:JSON.stringify(body),signal:request.signal,requestId:randomUUID(),userAgent:agent==='dsh'?'deepseek-harness/1':headers.get('user-agent')||''})
-          }catch(error){return errors(error?.status||502,error?.message||'AGY plugin failed')}
+            timing.mark('runtime_wait')
+            request.signal.throwIfAborted()
+            const runtime=await waitForSignal(getRuntime(home),request.signal)
+            timing.mark('runtime_ready')
+            return await runtime.broker.fetch(request.url,{body:JSON.stringify(body),signal:request.signal,timing,userAgent:agent==='dsh'?'deepseek-harness/1':headers.get('user-agent')||''})
+          }catch(error){
+            if(request.signal.aborted)return disconnect()
+            return reject(error?.status||502,error?.message||'AGY plugin failed','runtime_error')
+          }
         }}
       },
       async usage(getAuth){try{const runtime=await getRuntime(accountHome(await getAuth()));return await runtime.usage()}catch(error){return {windows:[],error:error.message}}},

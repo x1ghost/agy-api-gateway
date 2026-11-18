@@ -30,5 +30,16 @@ with tempfile.TemporaryDirectory() as directory:
         header429=next(v for _,v in events if v.get('ticket')=='429' and v.get('kind')=='headers')
         assert header429['status']==429 and json.loads(base64.b64decode(header429['error_body']))['error']['message']=='synthetic limit'
         assert any(v.get('ticket')=='200' and v.get('kind')=='end' for _,v in events)
+        async def cancelled(endpoint,payload):
+            events.append((endpoint,payload))
+            raise module.urllib.error.HTTPError('fixture',410,'Cancelled',{},None)
+        module.send=cancelled
+        flow=types.SimpleNamespace(metadata={'ticket':'cancelled'},response=types.SimpleNamespace(status_code=200,headers={},stream=None))
+        bridge.responseheaders(flow)
+        flow.response.stream(b'unread chunk')
+        await flow.metadata['worker']
+        assert flow.metadata['queue'].empty()
+        assert flow.response.stream(b'late chunk')==b'' and flow.metadata['queue'].empty()
+        assert [v['kind'] for _,v in events if v.get('ticket')=='cancelled']==['headers']
     asyncio.run(verify())
 print('Magpie transport passed')

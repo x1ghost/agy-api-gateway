@@ -133,6 +133,27 @@ test('Claude streamed thought fragments replay as one signed thinking block', ()
   assert.deepEqual(projected.contents[1].parts,[{thought:true,text:'think once',thoughtSignature:'provider-signature'},{functionCall:{name:'Read',args:{path:'x'}}}])
 })
 
+test('adjacent signed Claude thought blocks replay independently with a signed tool call',()=>{
+  const model='claude-opus-fixture',first={role:'user',content:'synthetic'}
+  const tool={name:'Read',input_schema:{type:'object'}}
+  const thought=text=>({thought:true,text})
+  const signature=(text,thoughtSignature)=>({thought:true,text,thoughtSignature})
+  const wireCall={functionCall:{id:'fixture-call',name:'Read',args:{path:'sample'}},thoughtSignature:'tool-signature'}
+  const replay=parts=>{
+    const store=new WireStore()
+    const turn=new WireTurn({model,messages:[first],tools:[tool],thinking:{type:'adaptive',display:'summarized'}},store,()=>{})
+    const packet={response:{candidates:[{finishReason:'STOP',content:{parts:[...parts,wireCall]}}]}}
+    turn.push(Buffer.from('data: '+JSON.stringify(packet)+'\n\n'))
+    const {content}=turn.finish()
+    const messages=[first,{role:'assistant',content},{role:'user',content:[{type:'tool_result',tool_use_id:content.at(-1).id,content:'synthetic result'}]}]
+    return projectCc({model,messages,tools:[tool]},store)
+  }
+  const result=replay([thought('first'),signature(' block','first-signature'),thought('second'),thought(' block'),signature('','second-signature')])
+  assert.deepEqual(result.contents[1].parts,[signature('first block','first-signature'),signature('second block','second-signature'),wireCall])
+  assert.equal(result.contents[2].parts[0].functionResponse.id,'fixture-call')
+  assert.throws(()=>replay([signature('first','first-signature'),thought('unsigned')]),error=>error.status===409)
+})
+
 test('switching models retains tool signatures without old reasoning', t => {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'agy-cross-'))
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}))

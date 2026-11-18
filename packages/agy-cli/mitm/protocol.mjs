@@ -192,8 +192,8 @@ function thinkingDisplay(body) {
   if(Object.keys(value).some(k=>!['type','display'].includes(k))||value.display!==undefined&&!['omitted','summarized','updates'].includes(value.display))throw fail('Unsupported adaptive thinking configuration')
   return value.display||'omitted'
 }
-// Streamed Claude thinking arrives as text fragments followed by a separate
-// signature fragment. Reassemble the original signed block for history replay.
+// Each Claude signature closes its own thought block, including when two
+// signed blocks arrive consecutively with no intervening visible content.
 function replayParts(model, wire) {
   const clean=wire.filter(part=>!(part.text===''&&Object.keys(part).length===1))
   if(!/claude/i.test(model))return clean
@@ -203,11 +203,18 @@ function replayParts(model, wire) {
     const group=[]
     while(i<clean.length&&clean[i].thought===true)group.push(clean[i++])
     if(group.some(p=>Object.keys(p).some(k=>!['thought','text','thoughtSignature'].includes(k))||typeof p.text!=='string'))throw fail('Unsupported Claude thinking history',409)
-    const signed=group.filter(p=>p.thoughtSignature)
-    if(signed.length!==1||signed[0]!==group.at(-1))throw fail('Claude thinking history is missing its final signature',409)
-    const text=group.map(p=>p.text).join('')
-    if(!text)throw fail('Claude thinking history has no replayable text',409)
-    result.push({thought:true,text,thoughtSignature:signed[0].thoughtSignature})
+    let text='',pending=false
+    for(const part of group) {
+      text+=part.text
+      pending=true
+      if(!part.thoughtSignature)continue
+      if(typeof part.thoughtSignature!=='string')throw fail('Unsupported Claude thinking history',409)
+      if(!text)throw fail('Claude thinking history has no replayable text',409)
+      result.push({thought:true,text,thoughtSignature:part.thoughtSignature})
+      text=''
+      pending=false
+    }
+    if(pending)throw fail('Claude thinking history is missing its final signature',409)
   }
   return result
 }
@@ -307,7 +314,7 @@ export function replaceRequest(envelope, body, store, options) {
 // Text is delivered as it arrives. A tool block is exposed only after a complete
 // successful response, so malformed/truncated arguments cannot execute in CC.
 export class WireTurn {
-  constructor(body, store, emit) { this.body=body;this.store=store;this.emit=emit;this.parts=[];this.content=[];this.tail='';this.decoder=new TextDecoder();this.index=-1;this.textOpen=false;this.finished=false;this.reason=null;this.usage={};this.id='msg_'+randomUUID().replaceAll('-','');this.bytes=0;this.thinkingDisplay=thinkingDisplay(body);this.thinkingBlock=null;this.thinkingOpen=false }
+  constructor(body, store, emit, onSse) { this.body=body;this.store=store;this.emit=emit;this.onSse=onSse;this.parts=[];this.content=[];this.tail='';this.decoder=new TextDecoder();this.index=-1;this.textOpen=false;this.finished=false;this.reason=null;this.usage={};this.id='msg_'+randomUUID().replaceAll('-','');this.bytes=0;this.thinkingDisplay=thinkingDisplay(body);this.thinkingBlock=null;this.thinkingOpen=false }
   start() { this.emit('message_start',{type:'message_start',message:{id:this.id,type:'message',role:'assistant',model:this.body.model,content:[],stop_reason:null,stop_sequence:null,usage:{input_tokens:0,output_tokens:0}}}) }
   closeText() { if(this.textOpen){this.emit('content_block_stop',{type:'content_block_stop',index:this.index});this.textOpen=false} }
   startThinking() {
@@ -334,6 +341,8 @@ export class WireTurn {
       const event=this.tail.slice(0,end);this.tail=this.tail.slice(end+2)
       const data=event.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n')
       if(!data||data==='[DONE]')continue
+      this.onSse?.()
+      this.onSse=undefined
       const packet=JSON.parse(data),r=packet.response||packet
       if(r.error||packet.error)throw fail('Upstream model error',Number((r.error||packet.error).code)||502)
       if(r.usageMetadata)this.usage=r.usageMetadata
