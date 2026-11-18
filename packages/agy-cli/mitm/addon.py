@@ -95,11 +95,15 @@ class Bridge:
       await send('/event',{'ticket':ticket,'kind':'chunk','data':base64.b64encode(chunk).decode()})
      await send('/event',{'ticket':ticket,'kind':'end'})
     flow.metadata['complete']=True
-   except Exception:
+   except Exception as error:
+    if isinstance(error,urllib.error.HTTPError) and error.code==410:return
     try:await send('/event',{'ticket':ticket,'kind':'error'})
     except Exception:pass
+   finally:
+    while not queue.empty():queue.get_nowait()
   flow.metadata['worker']=asyncio.create_task(worker())
   def intercept(chunk):
+   if flow.metadata['worker'].done():return b'' if chunk else ack()
    if chunk:
     flow.metadata['size']+=len(chunk)
     if flow.metadata['size']>32*1024*1024:queue.put_nowait(ValueError('Response too large'))
