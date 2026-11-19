@@ -85,14 +85,11 @@ export function removeClientProductNotes(text) {
 export const KNOWN_REFUSED_SYSTEM_HASHES = new Set([
   '10591efdcea75a1645b7f19037b36c979849ad4ec27f11ce87a8393423597b44',
 ])
-export const KNOWN_REMOVED_SYSTEM_HASHES = new Set([
-  '1a09743d32dec2b476dad8683b9910ca6f750cc9b79bae1703df553c5667f875',
-])
 export const systemFingerprint = text => createHash('sha256').update(text.trim().replace(/\s+/g,' ')).digest('hex')
-export function removeKnownRefusedParagraphs(text, hashes=KNOWN_REMOVED_SYSTEM_HASHES) {
+export function removeKnownRefusedParagraphs(text) {
   return text.split(/(\r?\n\s*\r?\n)/).map(p => {
     const trimmed = p.trim()
-    if (hashes.has(systemFingerprint(p)) || /^#\s*(?:Harness|System)\b/i.test(trimmed)) return ''
+    if (/^#\s*(?:Harness|System)\b/i.test(trimmed)) return ''
     return p
   }).join('')
 }
